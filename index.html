@@ -17,7 +17,9 @@
 
   <p>This page will capture your microphone + screen, create an SDP offer and produce a compressed viewer link. Paste the viewer's compressed answer below and click "Set Answer".</p>
 
-  <button id="btnOffer">Generate Offer & Viewer Link</button>
+  <!-- New flow: enable media first, then generate offer (so clipboard copy works reliably) -->
+  <button id="btnEnableMedia">Enable screen & microphone</button>
+  <button id="btnOffer" disabled>Generate Offer & Viewer Link</button>
   <div id="status"></div>
 
   <h3>Viewer link (share this)</h3>
@@ -36,13 +38,12 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
   <script>
-    // Minimal helper: wait for ICE gathering to finish (onicecandidate null indicates done)
     function waitForIceComplete(pc, timeout = 10000) {
       return new Promise((resolve, reject) => {
         if (pc.iceGatheringState === 'complete') return resolve();
         const timer = setTimeout(() => {
           pc.onicecandidate = null;
-          resolve(); // timeout: proceed anyway
+          resolve();
         }, timeout);
         pc.onicecandidate = (e) => {
           if (!e.candidate) {
@@ -54,10 +55,13 @@
       });
     }
 
-    let pc;
-    let localStream;
-    let screenStreamGlobal = null; // keep screen stream to attach after session starts
+    let pc = null;
+    let localStream = null;
+    let screenStreamGlobal = null;
     let previewVisible = false;
+    let mediaEnabled = false;
+
+    const btnEnableMedia = document.getElementById('btnEnableMedia');
     const btnOffer = document.getElementById('btnOffer');
     const viewerLink = document.getElementById('viewerLink');
     const status = document.getElementById('status');
@@ -69,48 +73,61 @@
     function showPreviewIfReady() {
       if (previewVisible) return;
       if (!screenStreamGlobal) return;
-      // attach only the screen track(s) so the preview matches what viewer sees
       localVideo.srcObject = screenStreamGlobal;
       localVideo.muted = true;
       previewVisible = true;
       previewTitle.textContent = 'Sent preview — visible to viewer (active)';
     }
 
-    btnOffer.onclick = async () => {
+    btnEnableMedia.onclick = async () => {
       try {
-        status.textContent = 'Creating peer connection and gathering local media...';
-        pc = new RTCPeerConnection();
+        status.textContent = 'Requesting screen & microphone permission...';
+        // create pc now so tracks can be added without further permission prompts later
+        if (!pc) pc = new RTCPeerConnection();
 
-        // Get microphone + screen
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        screenStreamGlobal = screenStream; // store for later preview (only shown after session start)
 
-        // Combine streams: add audio tracks and screen tracks to PC, show local preview only after session
+        screenStreamGlobal = screenStream;
         localStream = new MediaStream();
         audioStream.getAudioTracks().forEach(t => { pc.addTrack(t, audioStream); localStream.addTrack(t); });
         screenStream.getVideoTracks().forEach(t => { pc.addTrack(t, screenStream); localStream.addTrack(t); });
 
-        // NOTE: do not set localVideo.srcObject here — preview must appear only after session start
+        // show immediate local preview (optional) so sharer knows media is enabled
+        localVideo.srcObject = localStream;
 
-        // Create offer
+        mediaEnabled = true;
+        btnOffer.disabled = false;
+        btnEnableMedia.disabled = true;
+        status.textContent = 'Media enabled. Now click "Generate Offer & Viewer Link".';
+      } catch (err) {
+        console.error(err);
+        status.textContent = 'Media enable failed or denied: ' + (err && err.message ? err.message : err);
+      }
+    };
+
+    btnOffer.onclick = async () => {
+      if (!mediaEnabled || !pc) {
+        status.textContent = 'Enable screen & mic first.';
+        return;
+      }
+      try {
+        status.textContent = 'Creating offer and gathering ICE...';
+
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        status.textContent = 'Waiting for ICE gathering to complete...';
         await waitForIceComplete(pc, 10000);
 
-        // Use the finalized localDescription
         const fullOffer = pc.localDescription;
         const payload = JSON.stringify(fullOffer);
         const compressed = LZString.compressToEncodedURIComponent(payload);
 
-        // Build viewer URL (viewer.html in same folder) — use URL() so it works reliably
         const urlObj = new URL('viewer.html', window.location.href);
         urlObj.searchParams.set('o', compressed);
         viewerLink.value = urlObj.href;
 
-        // copy the viewer link to clipboard (with fallback)
+        // copy the viewer link to clipboard (now inside user gesture post-permission -> should succeed)
         try {
           if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(urlObj.href);
@@ -126,19 +143,16 @@
           }
         } catch (copyErr) {
           console.warn('Clipboard copy failed', copyErr);
-          status.textContent = 'Offer ready. Could not copy link — please copy manually.';
+          status.textContent = 'Offer ready. Could not copy link — please copy manually from the field.';
         }
       } catch (err) {
         console.error(err);
-        status.textContent = 'Error: ' + err;
+        status.textContent = 'Error creating offer: ' + (err && err.message ? err.message : err);
       }
     };
 
     btnSetAnswer.onclick = async () => {
-      if (!pc) {
-        status.textContent = 'No peer connection. Generate an offer first.'; 
-        return;
-      }
+      if (!pc) { status.textContent = 'No peer connection. Enable media first.'; return; }
       const compressed = answerArea.value.trim();
       if (!compressed) { status.textContent = 'Paste compressed answer first.'; return; }
       try {
@@ -149,15 +163,12 @@
         await pc.setRemoteDescription(answer);
         status.textContent = 'Remote description set. Waiting for connection...';
 
-        // when peer connection becomes connected/completed show the sent preview
         pc.addEventListener('connectionstatechange', () => {
           if (pc.connectionState === 'connected' || pc.connectionState === 'completed') {
             showPreviewIfReady();
             status.textContent = 'Session active — preview visible to viewer';
           }
         });
-
-        // ICE state fallback
         pc.addEventListener('iceconnectionstatechange', () => {
           if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             showPreviewIfReady();
@@ -165,10 +176,8 @@
           }
         });
 
-        // also attempt to show preview immediately after setting remote description if possible
         setTimeout(() => {
           if (!previewVisible) {
-            // if the connection seems ready, show preview
             if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
               showPreviewIfReady();
               status.textContent = 'Session active — preview visible to viewer';

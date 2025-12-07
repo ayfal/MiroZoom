@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Screen Share</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Screen Sharing Application</h1>
+        <video id="screenVideo" autoplay playsinline></video>
+        <div class="controls">
+            <input type="text" id="offerLink" placeholder="Share this link" readonly>
+            <button id="copyButton">Copy Link</button>
+            <span id="copySuccess" class="hidden">Copied!</span>
+        </div>
+    </div>
+    <script src="js/webrtc.js"></script>
+    <script src="js/clipboard.js"></script>
+</body>
+</html>

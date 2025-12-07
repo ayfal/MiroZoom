@@ -31,6 +31,7 @@
     <div class="label">2) Send this link to your friend:</div>
     <textarea id="viewerLink" rows="3" readonly></textarea>
     <button id="copyLinkBtn" class="secondary">Copy viewer link</button>
+    <div id="copiedLink" style="color:#6f6; font-weight:bold; display:none;">Copied!</div>
   </div>
 
   <div class="row">
@@ -49,6 +50,7 @@
     const answerBox = document.getElementById('answerBox');
     const preview = document.getElementById('preview');
     const remoteAudio = document.getElementById('remoteAudio');
+    const copiedLink = document.getElementById('copiedLink');
 
     const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
     let pc;
@@ -98,13 +100,9 @@
 
     function buildViewerLink() {
       if (!pc || !pc.localDescription) return;
-      const payload = {
-        type: 'offer',
-        sdp: pc.localDescription.sdp,
-        candidates: iceCandidates
-      };
+      const payload = { type: 'offer', sdp: pc.localDescription.sdp, candidates: iceCandidates };
       const encoded = compress(payload);
-      const baseUrl = location.href.replace('share.html', 'view.html').split('#')[0];
+      const baseUrl = location.href.replace(/share\.html.*$/, 'view.html'); // strip any hash/query
       viewerLink.value = `${baseUrl}#${encoded}`;
     }
 
@@ -135,7 +133,11 @@
     }
 
     startBtn.onclick = startSharing;
-    copyLinkBtn.onclick = () => navigator.clipboard.writeText(viewerLink.value || '');
+    copyLinkBtn.onclick = async () => {
+      await navigator.clipboard.writeText(viewerLink.value || '');
+      copiedLink.style.display = 'block';
+      setTimeout(() => copiedLink.style.display = 'none', 1800);
+    };
     applyAnswerBtn.onclick = applyAnswer;
   </script>
 </body>

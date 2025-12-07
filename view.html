@@ -20,6 +20,7 @@
   <div id="controls">
     <button id="copyAnswerBtn">Copy answer to clipboard</button>
     <button id="fsBtn">Fullscreen</button>
+    <div id="copied" style="color:#6f6; font-weight:bold; display:none;">Copied!</div>
     <div id="error"></div>
   </div>
   <video id="remoteVideo" autoplay playsinline></video>
@@ -31,6 +32,7 @@
     const copyAnswerBtn = document.getElementById('copyAnswerBtn');
     const fsBtn = document.getElementById('fsBtn');
     const errorBox = document.getElementById('error');
+    const copiedBox = document.getElementById('copied');
 
     const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
     let pc;
@@ -46,14 +48,15 @@
     function showError(msg) { errorBox.textContent = msg; }
 
     function getOfferFromUrl() {
-      const enc = location.hash.replace(/^#/, '');
-      if (!enc) return null;
-      try {
-        return decompress(enc);
-      } catch (e) {
-        showError('Bad offer in link.');
-        return null;
+      const hash = location.hash.replace(/^#/, '');
+      if (hash) {
+        try { return decompress(hash); } catch (_) { showError('Bad offer in link.'); return null; }
       }
+      // fallback: try ?offer= if hash missing
+      const params = new URLSearchParams(location.search);
+      const enc = params.get('offer');
+      if (!enc) return null;
+      try { return decompress(enc); } catch (_) { showError('Bad offer in link.'); return null; }
     }
 
     function createPeer() {
@@ -89,7 +92,11 @@
       await waitForIceComplete(pc, 4000);
       const payload = { sdp: pc.localDescription.sdp, candidates: iceCandidates };
       const encoded = compress(payload);
-      copyAnswerBtn.onclick = () => navigator.clipboard.writeText(encoded);
+      copyAnswerBtn.onclick = async () => {
+        await navigator.clipboard.writeText(encoded);
+        copiedBox.style.display = 'block';
+        setTimeout(() => copiedBox.style.display = 'none', 1800);
+      };
     }
 
     async function waitForIceComplete(pc, timeoutMs) {

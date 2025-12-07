@@ -2,10 +2,10 @@ const VIEWER_ID = 'viewer-1';
 let pc;
 
 const ROOM = 'dkj5ks3sm8a'; // keep this secret and match viewer
-const localPreview = document.getElementById('sharedVideo'); // optional preview
 
 document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('startShare');
+  const localPreview = document.getElementById('sharedVideo');
   if (!btn) {
     console.error('startShare button not found in DOM');
     return;
@@ -19,7 +19,12 @@ document.addEventListener('DOMContentLoaded', () => {
         localPreview.play().catch(console.warn);
       }
 
-      const { joinRoom } = Trystero.torrent;
+      const tr = window.Trystero || window.trystero;
+      if (!tr) {
+        console.error('Trystero library not loaded');
+        return;
+      }
+      const { joinRoom } = tr.torrent;
       const room = joinRoom({ appId: 'p2p-screenshare' }, ROOM);
 
       room.onPeerJoin(peerId => {

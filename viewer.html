@@ -21,7 +21,25 @@
     .copied-banner.visible { display:block; }
     .status { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:62; background:rgba(0,0,0,0.6); color:#ffd; padding:8px 12px; border-radius:8px; font-size:18px; }
     body.session-started .center-btn, body.session-started .copied-banner, body.session-started .status { display:none !important; }
-    @media (max-width:640px) { .center-btn { min-width:260px; padding:18px 22px; font-size:20px; border-radius:10px; } .status { font-size:16px; } }
+
+    /* manual copy modal (shown when clipboard write fails) */
+    .modal {
+      position:fixed; inset:0; z-index:200; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.85);
+      padding:20px; box-sizing:border-box;
+    }
+    .modal.visible { display:flex; }
+    .modal .box {
+      width:100%; max-width:960px; background:#111; border-radius:12px; padding:16px; box-sizing:border-box; color:#fff;
+    }
+    .modal textarea {
+      width:100%; height:240px; font-family:monospace; font-size:13px; padding:12px; box-sizing:border-box;
+      background:#000; color:#0f0; border:1px solid #333; border-radius:8px;
+    }
+    .modal .row { display:flex; gap:10px; margin-top:12px; align-items:center; }
+    .modal button { padding:12px 16px; font-size:16px; border-radius:8px; border:none; cursor:pointer; }
+    .btn-primary { background:#0078d4; color:#fff; }
+    .btn-secondary { background:#333; color:#fff; }
+    @media (max-width:640px) { .center-btn { min-width:260px; padding:18px 22px; font-size:20px; } .status { font-size:16px; } textarea { height:200px; } }
   </style>
 </head>
 <body>
@@ -39,6 +57,20 @@
     Copied to clipboard — send this to the sharer. Waiting for session to start...
   </div>
 
+  <!-- Manual copy modal shown if clipboard API write fails (large textarea for PC manual copy) -->
+  <div class="modal" id="manualModal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="box" role="document">
+      <div style="font-size:18px;margin-bottom:8px;">Cannot copy automatically — please copy the answer manually and send it to the sharer</div>
+      <textarea id="manualAnswer" readonly></textarea>
+      <div class="row">
+        <button id="selectCopy" class="btn-primary">Select & Copy</button>
+        <button id="closeModal" class="btn-secondary">Close</button>
+        <div style="flex:1"></div>
+        <div style="color:#ddd;font-size:14px;">Tip: Ctrl+C after selection, then send via WhatsApp / messenger</div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
   <script>
     const params = new URLSearchParams(location.search);
@@ -48,6 +80,10 @@
     const viewport = document.getElementById('viewport');
     const btnCopy = document.getElementById('btnCopy');
     const copiedBanner = document.getElementById('copiedBanner');
+    const manualModal = document.getElementById('manualModal');
+    const manualAnswer = document.getElementById('manualAnswer');
+    const selectCopy = document.getElementById('selectCopy');
+    const closeModal = document.getElementById('closeModal');
 
     let pc;
     let compressedAnswer = '';
@@ -93,17 +129,46 @@
       }
     }
 
+    // Show manual copy modal with the answer text
+    function showManualCopyModal(text) {
+      manualAnswer.value = text;
+      manualModal.classList.add('visible');
+      manualModal.setAttribute('aria-hidden', 'false');
+      manualAnswer.focus();
+      manualAnswer.select();
+    }
+    function hideManualCopyModal() {
+      manualModal.classList.remove('visible');
+      manualModal.setAttribute('aria-hidden', 'true');
+    }
+
+    // fallback select & execCommand copy
+    function fallbackCopyToClipboard(text) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch (e) {
+        return false;
+      }
+    }
+
     // When the user clicks the main button: try to get mic, add tracks, create answer, wait ICE, compress & copy.
     async function onCopyClick() {
       btnCopy.disabled = true;
       btnCopy.textContent = 'Preparing answer…';
       setStatus('Requesting microphone permission...');
 
-      let micAdded = false;
       try {
+        // prompt for mic first so the answer includes mic track
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         micStream.getAudioTracks().forEach(t => pc.addTrack(t, micStream));
-        micAdded = true;
         setStatus('Microphone added. Creating answer...');
       } catch (err) {
         console.warn('Microphone not available / denied:', err);
@@ -122,25 +187,34 @@
         const payload = JSON.stringify(fullAnswer);
         compressedAnswer = LZString.compressToEncodedURIComponent(payload);
 
-        // copy to clipboard
+        // first try modern clipboard API (may fail if permission/gesture lost)
         try {
           if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(compressedAnswer);
           } else {
-            const ta = document.createElement('textarea');
-            ta.value = compressedAnswer;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
+            throw new Error('clipboard.writeText not available');
           }
+          // success
           copiedBanner.classList.add('visible');
           btnCopy.textContent = 'Copied — waiting for session';
           setStatus('Answer copied. Send it to the sharer.');
+          answerReady = true;
         } catch (copyErr) {
-          console.warn('Copy failed', copyErr);
-          setStatus('Answer ready but copy failed — please paste manually.');
-          btnCopy.textContent = 'Copy failed';
+          console.warn('Clipboard API copy failed:', copyErr);
+          // try execCommand fallback triggered from user gesture (may still fail after prompts)
+          const fallbackOk = fallbackCopyToClipboard(compressedAnswer);
+          if (fallbackOk) {
+            copiedBanner.classList.add('visible');
+            btnCopy.textContent = 'Copied (fallback) — waiting for session';
+            setStatus('Answer copied (fallback). Send it to the sharer.');
+            answerReady = true;
+          } else {
+            // final fallback: show large textarea for manual copy
+            showManualCopyModal(compressedAnswer);
+            btnCopy.textContent = 'Copied (manual)';
+            setStatus('Could not copy automatically. Please copy the text shown and send it to the sharer.');
+            answerReady = true;
+          }
         }
       } catch (err) {
         console.error(err);
@@ -154,22 +228,39 @@
       sessionStarted = true;
       document.body.classList.add('session-started');
       setStatus('Session started');
+      // hide manual modal if visible
+      hideManualCopyModal();
     }
 
-    // zoom & pan basic handlers (kept minimal)
-    function applyZoom(v, cx=null, cy=null) {
+    // wire modal buttons
+    selectCopy.addEventListener('click', async () => {
+      manualAnswer.select();
+      // try execCommand again
+      const ok = document.execCommand('copy');
+      if (ok) {
+        hideManualCopyModal();
+        copiedBanner.classList.add('visible');
+        btnCopy.textContent = 'Copied (manual) — waiting for session';
+        setStatus('Copied to clipboard. Send it to the sharer.');
+      } else {
+        // leave modal open so user can Ctrl+C
+        setStatus('Press Ctrl+C to copy, then close this dialog and send it.');
+      }
+    });
+    closeModal.addEventListener('click', () => {
+      hideManualCopyModal();
+    });
+
+    // zoom & minimal pan handlers
+    function applyZoom(v) {
       zoom = Math.max(1, Math.min(4, v));
       document.documentElement.style.setProperty('--zoom', zoom);
-      if (cx && cy) {
-        // small visual focus behavior handled by CSS transform-origin center; complex pan retained earlier but omitted for brevity
-      }
     }
     window.addEventListener('wheel', (e) => {
       if (e.ctrlKey) return;
       const delta = e.deltaY > 0 ? -0.1 : 0.1;
       applyZoom(+(zoom + delta).toFixed(2));
     }, { passive:true });
-    viewport.addEventListener('dblclick', () => applyZoom( zoom < 2 ? 2.2 : 1 ));
 
     // wire events
     btnCopy.addEventListener('click', onCopyClick);

@@ -1,20 +1,34 @@
 const videoElement = document.getElementById('sharedScreen');
-const audioElement = document.getElementById('audioStream');
+let pc;
 
-const peer = new Peer('viewer-1', { host: 'peerjs.com', secure: true, port: 443 });
-
-peer.on('call', call => {
-    // Answer without sending a stream (viewer not sending video)
-    call.answer();
-    call.on('stream', stream => {
-        // Screen (with audio if included) arrives as one stream
-        videoElement.srcObject = stream;
-        videoElement.play().catch(console.warn);
-        // If you prefer separate audio element:
-        audioElement.srcObject = stream;
-        audioElement.play().catch(console.warn);
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        const offerCode = document.getElementById('offerInput').value.trim();
+        const offer = JSON.parse(atob(offerCode));
+        
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        
+        pc.ontrack = event => {
+            videoElement.srcObject = event.streams[0];
+            videoElement.play().catch(console.warn);
+        };
+        
+        await pc.setRemoteDescription(offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        // Wait for ICE gathering
+        await new Promise(resolve => {
+            if (pc.iceGatheringState === 'complete') resolve();
+            else pc.onicegatheringstatechange = () => {
+                if (pc.iceGatheringState === 'complete') resolve();
+            };
+        });
+        
+        const answerCode = btoa(JSON.stringify(pc.localDescription));
+        document.getElementById('answerCode').value = answerCode;
+        document.getElementById('answerSection').style.display = 'block';
     });
-    call.on('error', console.error);
 });
-
-peer.on('error', console.error);

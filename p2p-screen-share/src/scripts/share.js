@@ -1,20 +1,40 @@
 const VIEWER_ID = 'viewer-1';
-let peer;
-let activeCall;
+let pc;
 
 const startScreenShare = async () => {
     try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        peer = new Peer('sharer-1', { host: 'peerjs.com', secure: true, port: 443 });
-
-        peer.on('open', () => {
-            activeCall = peer.call(VIEWER_ID, screenStream);
-            activeCall?.on('error', console.error);
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        
+        pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
-
-        peer.on('error', console.error);
+        
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        
+        // Wait for ICE gathering
+        await new Promise(resolve => {
+            if (pc.iceGatheringState === 'complete') resolve();
+            else pc.onicegatheringstatechange = () => {
+                if (pc.iceGatheringState === 'complete') resolve();
+            };
+        });
+        
+        const offerCode = btoa(JSON.stringify(pc.localDescription));
+        document.getElementById('offerCode').value = offerCode;
+        document.getElementById('offerSection').style.display = 'block';
+        
+        // Listen for answer
+        document.getElementById('submitAnswer').onclick = async () => {
+            const answerCode = document.getElementById('answerInput').value.trim();
+            const answer = JSON.parse(atob(answerCode));
+            await pc.setRemoteDescription(answer);
+        };
+        
     } catch (err) {
-        console.error('Error starting screen share:', err);
+        console.error('Error:', err);
     }
 };
 

@@ -30,4 +30,11 @@ const startScreenShare = async () => {
     }
 };
 
-document.getElementById("startShare")?.addEventListener("click", startScreenShare);
+document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("startShare");
+    if (!btn) {
+        console.error("startShare button not found in DOM");
+        return;
+    }
+    btn.addEventListener("click", startScreenShare);
+});

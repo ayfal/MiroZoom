@@ -155,9 +155,33 @@
 
         startShareBtn.addEventListener('click', async () => {
             try {
+                statusEl.textContent = 'Getting screen and audio...';
+                
+                // Get screen share FIRST
+                const screenStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: "always" },
+                    audio: false
+                });
+
+                // Get microphone
+                const audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
+                    video: false
+                });
+
+                localStream = new MediaStream([
+                    ...screenStream.getTracks(),
+                    ...audioStream.getTracks()
+                ]);
+                console.log('Stream tracks:', localStream.getTracks().map(t => t.kind));
+
                 statusEl.textContent = 'Connecting to server...';
                 
-                // Initialize PeerJS with a custom ID
+                // Initialize PeerJS AFTER getting the stream
                 const myId = generateShortId();
                 peer = new Peer(myId, {
                     config: {
@@ -168,31 +192,7 @@
                     }
                 });
 
-                peer.on('open', async (id) => {
-                    statusEl.textContent = 'Getting screen and audio...';
-                    
-                    // Get screen share
-                    const screenStream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: "always" },
-                        audio: false
-                    });
-
-                    // Get microphone
-                    const audioStream = await navigator.mediaDevices.getUserMedia({
-                        audio: {
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true
-                        },
-                        video: false
-                    });
-
-                    localStream = new MediaStream([
-                        ...screenStream.getTracks(),
-                        ...audioStream.getTracks()
-                    ]);
-                    console.log('Stream tracks:', localStream.getTracks().map(t => t.kind));
-
+                peer.on('open', (id) => {
                     const viewerUrl = `${window.location.origin}${window.location.pathname}?id=${id}`;
                     linkDisplay.textContent = viewerUrl;
                     linkContainer.classList.remove('hidden');
@@ -203,11 +203,9 @@
 
                 peer.on('call', (incomingCall) => {
                     call = incomingCall;
-                    // Answer the call with our stream
                     call.answer(localStream);
                     statusEl.textContent = 'Connected! Sharing screen and audio.';
 
-                    // Listen for when call ends
                     call.on('close', () => {
                         statusEl.textContent = 'Connection closed';
                     });

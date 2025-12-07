@@ -283,6 +283,12 @@
                         viewerStream = new MediaStream();
                     }
 
+                    // Add a dummy video track so the offer includes video
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 1; canvas.height = 1;
+                    const dummyTrack = canvas.captureStream(1).getVideoTracks()[0];
+                    viewerStream.addTrack(dummyTrack);
+
                     console.log('Calling sharer with ID:', peerId);
                     statusEl.textContent = 'Connecting to sharer...';
                     

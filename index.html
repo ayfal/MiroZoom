@@ -60,20 +60,18 @@
             background: #666;
             cursor: not-allowed;
         }
-        #shareLink {
-            background: #2196F3;
-        }
         #status {
             margin: 10px 0;
             font-size: 16px;
         }
         .link-box {
             background: #333;
-            padding: 10px;
+            padding: 15px;
             border-radius: 5px;
             margin: 10px 0;
             word-break: break-all;
-            font-size: 14px;
+            font-size: 20px;
+            font-weight: bold;
         }
         #hideControls {
             background: #ff9800;
@@ -116,16 +114,11 @@
         <div id="audioIndicator">🎤 Speaking</div>
     </div>
 
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script>
-        const config = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        };
-
-        let pc = null;
-        let dataChannel = null;
+        let peer = null;
+        let conn = null;
+        let call = null;
         let isSharer = false;
         let localStream = null;
 
@@ -143,13 +136,17 @@
 
         // Check URL parameters
         const urlParams = new URLSearchParams(window.location.search);
-        const offerData = urlParams.get('offer');
+        const peerId = urlParams.get('id');
 
-        if (offerData) {
+        function generateShortId() {
+            return 'share-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        if (peerId) {
             // Viewer mode
             isSharer = false;
             viewerControls.classList.remove('hidden');
-            initViewer(offerData);
+            initViewer(peerId);
         } else {
             // Sharer mode
             isSharer = true;
@@ -158,132 +155,159 @@
 
         startShareBtn.addEventListener('click', async () => {
             try {
-                // Get screen share
-                const screenStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: "always" },
-                    audio: false
+                statusEl.textContent = 'Connecting to server...';
+                
+                // Initialize PeerJS with a custom ID
+                const myId = generateShortId();
+                peer = new Peer(myId, {
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' }
+                        ]
+                    }
                 });
 
-                // Get microphone
-                const audioStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    },
-                    video: false
-                });
+                peer.on('open', async (id) => {
+                    statusEl.textContent = 'Getting screen and audio...';
+                    
+                    // Get screen share
+                    const screenStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: "always" },
+                        audio: false
+                    });
 
-                localStream = new MediaStream([
-                    ...screenStream.getTracks(),
-                    ...audioStream.getTracks()
-                ]);
+                    // Get microphone
+                    const audioStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        },
+                        video: false
+                    });
 
-                await createOffer();
-                startShareBtn.disabled = true;
-                statusEl.textContent = 'Share this link with your friend:';
-            } catch (err) {
-                statusEl.textContent = 'Error: ' + err.message;
-            }
-        });
+                    localStream = new MediaStream([
+                        ...screenStream.getTracks(),
+                        ...audioStream.getTracks()
+                    ]);
 
-        async function createOffer() {
-            pc = new RTCPeerConnection(config);
-
-            // Add tracks to connection
-            localStream.getTracks().forEach(track => {
-                pc.addTrack(track, localStream);
-            });
-
-            // Create data channel for signaling
-            dataChannel = pc.createDataChannel('signal');
-            setupDataChannel();
-
-            pc.onicecandidate = (event) => {
-                if (event.candidate === null) {
-                    // All ICE candidates gathered
-                    const offer = btoa(JSON.stringify(pc.localDescription));
-                    const viewerUrl = `${window.location.origin}${window.location.pathname}?offer=${offer}`;
+                    const viewerUrl = `${window.location.origin}${window.location.pathname}?id=${id}`;
                     linkDisplay.textContent = viewerUrl;
                     linkContainer.classList.remove('hidden');
                     hideControlsBtn.classList.remove('hidden');
-                }
-            };
+                    statusEl.textContent = 'Share this short link with your friend:';
+                    startShareBtn.disabled = true;
+                });
 
-            pc.ondatachannel = (event) => {
-                const channel = event.channel;
-                channel.onmessage = async (e) => {
-                    const answer = JSON.parse(atob(e.data));
-                    await pc.setRemoteDescription(answer);
+                peer.on('call', (incomingCall) => {
+                    // Answer the call with our stream
+                    incomingCall.answer(localStream);
                     statusEl.textContent = 'Connected! Sharing screen and audio.';
-                };
-            };
+                    call = incomingCall;
 
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-        }
+                    // Listen for when call ends
+                    incomingCall.on('close', () => {
+                        statusEl.textContent = 'Connection closed';
+                    });
+                });
 
-        async function initViewer(offerData) {
-            pc = new RTCPeerConnection(config);
+                peer.on('error', (err) => {
+                    statusEl.textContent = 'Error: ' + err.message;
+                    console.error(err);
+                });
 
-            pc.ontrack = (event) => {
-                if (remoteVideo.srcObject !== event.streams[0]) {
-                    remoteVideo.srcObject = event.streams[0];
-                    remoteVideo.classList.remove('hidden');
-                    controlsDiv.classList.add('hidden');
-                    statusEl.textContent = 'Connected!';
-                    
-                    // Audio level detection
-                    const audioContext = new AudioContext();
-                    const source = audioContext.createMediaStreamSource(event.streams[0]);
-                    const analyzer = audioContext.createAnalyser();
-                    source.connect(analyzer);
-                    
-                    const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-                    function checkAudio() {
-                        analyzer.getByteFrequencyData(dataArray);
-                        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                        if (average > 10) {
-                            audioIndicator.style.display = 'block';
-                            setTimeout(() => {
-                                audioIndicator.style.display = 'none';
-                            }, 200);
-                        }
-                        requestAnimationFrame(checkAudio);
+            } catch (err) {
+                statusEl.textContent = 'Error: ' + err.message;
+                console.error(err);
+            }
+        });
+
+        async function initViewer(peerId) {
+            try {
+                statusEl.textContent = 'Connecting to server...';
+                
+                // Initialize PeerJS
+                peer = new Peer({
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' }
+                        ]
                     }
-                    checkAudio();
-                }
-            };
+                });
 
-            pc.ondatachannel = (event) => {
-                dataChannel = event.channel;
-                setupDataChannel();
-            };
+                peer.on('open', async () => {
+                    statusEl.textContent = 'Getting microphone...';
+                    
+                    // Get microphone for viewer
+                    let viewerStream;
+                    try {
+                        viewerStream = await navigator.mediaDevices.getUserMedia({
+                            audio: {
+                                echoCancellation: true,
+                                noiseSuppression: true,
+                                autoGainControl: true
+                            },
+                            video: false
+                        });
+                    } catch (err) {
+                        console.log('Could not get microphone, continuing without audio');
+                        viewerStream = new MediaStream();
+                    }
 
-            const offer = JSON.parse(atob(offerData));
-            await pc.setRemoteDescription(offer);
+                    statusEl.textContent = 'Connecting to sharer...';
+                    
+                    // Call the sharer
+                    call = peer.call(peerId, viewerStream);
 
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
+                    call.on('stream', (remoteStream) => {
+                        remoteVideo.srcObject = remoteStream;
+                        remoteVideo.classList.remove('hidden');
+                        controlsDiv.classList.add('hidden');
+                        statusEl.textContent = 'Connected!';
+                        
+                        // Audio level detection
+                        try {
+                            const audioContext = new AudioContext();
+                            const source = audioContext.createMediaStreamSource(remoteStream);
+                            const analyzer = audioContext.createAnalyser();
+                            source.connect(analyzer);
+                            
+                            const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+                            function checkAudio() {
+                                analyzer.getByteFrequencyData(dataArray);
+                                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                                if (average > 10) {
+                                    audioIndicator.style.display = 'block';
+                                    setTimeout(() => {
+                                        audioIndicator.style.display = 'none';
+                                    }, 200);
+                                }
+                                requestAnimationFrame(checkAudio);
+                            }
+                            checkAudio();
+                        } catch (err) {
+                            console.log('Audio indicator error:', err);
+                        }
+                    });
 
-            pc.onicecandidate = (event) => {
-                if (event.candidate === null && dataChannel && dataChannel.readyState === 'open') {
-                    const answerData = btoa(JSON.stringify(pc.localDescription));
-                    dataChannel.send(answerData);
-                }
-            };
-        }
+                    call.on('close', () => {
+                        statusEl.textContent = 'Connection closed';
+                        controlsDiv.classList.remove('hidden');
+                        remoteVideo.classList.add('hidden');
+                    });
+                });
 
-        function setupDataChannel() {
-            if (!dataChannel) return;
-            
-            dataChannel.onopen = () => {
-                console.log('Data channel opened');
-            };
-            
-            dataChannel.onclose = () => {
-                statusEl.textContent = 'Connection closed';
-            };
+                peer.on('error', (err) => {
+                    statusEl.textContent = 'Error: ' + err.message;
+                    console.error(err);
+                });
+
+            } catch (err) {
+                statusEl.textContent = 'Error: ' + err.message;
+                console.error(err);
+            }
         }
 
         copyLinkBtn.addEventListener('click', () => {
@@ -310,8 +334,11 @@
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
-            if (pc) {
-                pc.close();
+            if (call) {
+                call.close();
+            }
+            if (peer) {
+                peer.destroy();
             }
         });
     </script>

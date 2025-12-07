@@ -15,6 +15,8 @@
     .label { margin:6px 0; font-weight:bold; }
     video { width:100%; max-height:240px; background:#111; border:1px solid #333; border-radius:12px; object-fit:contain; }
   </style>
+  <!-- add pako for gzip -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
   <h1>Share Screen (You)</h1>
@@ -52,11 +54,14 @@
     let pc;
     let iceCandidates = [];
 
+    // replace helpers
     const toUrlSafe = (str) => btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
     const fromUrlSafe = (str) => {
       const pad = '='.repeat((4 - str.length % 4) % 4);
       return atob(str.replace(/-/g, '+').replace(/_/g, '/') + pad);
     };
+    const compress = (obj) => toUrlSafe(pako.deflate(JSON.stringify(obj), { to: 'string' }));
+    const decompress = (enc) => JSON.parse(pako.inflate(fromUrlSafe(enc), { to: 'string' }));
 
     function createPeer() {
       pc = new RTCPeerConnection({ iceServers });
@@ -98,9 +103,9 @@
         sdp: pc.localDescription.sdp,
         candidates: iceCandidates
       };
-      const encoded = toUrlSafe(JSON.stringify(payload));
-      const baseUrl = location.href.replace('share.html', 'view.html');
-      viewerLink.value = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}offer=${encoded}`;
+      const encoded = compress(payload);
+      const baseUrl = location.href.replace('share.html', 'view.html').split('#')[0];
+      viewerLink.value = `${baseUrl}#${encoded}`;
     }
 
     async function waitForIceComplete(pc, timeoutMs) {
@@ -118,7 +123,7 @@
       const text = answerBox.value.trim();
       if (!text) return;
       try {
-        const json = JSON.parse(fromUrlSafe(text));
+        const json = decompress(text);
         await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: json.sdp }));
         for (const c of json.candidates || []) {
           await pc.addIceCandidate(c);

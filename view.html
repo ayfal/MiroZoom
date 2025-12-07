@@ -13,6 +13,8 @@
     video { width:100vw; height:100vh; object-fit:contain; background:#000; }
     #error { color:#f66; margin-top:8px; font-size:16px; }
   </style>
+  <!-- add pako for gzip -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
   <div id="controls">
@@ -38,15 +40,16 @@
       const pad = '='.repeat((4 - str.length % 4) % 4);
       return atob(str.replace(/-/g, '+').replace(/_/g, '/') + pad);
     };
+    const compress = (obj) => toUrlSafe(pako.deflate(JSON.stringify(obj), { to: 'string' }));
+    const decompress = (enc) => JSON.parse(pako.inflate(fromUrlSafe(enc), { to: 'string' }));
 
     function showError(msg) { errorBox.textContent = msg; }
 
     function getOfferFromUrl() {
-      const params = new URLSearchParams(location.search);
-      const enc = params.get('offer');
+      const enc = location.hash.replace(/^#/, '');
       if (!enc) return null;
       try {
-        return JSON.parse(fromUrlSafe(enc));
+        return decompress(enc);
       } catch (e) {
         showError('Bad offer in link.');
         return null;
@@ -68,7 +71,6 @@
 
       createPeer();
 
-      // Add microphone (send audio back)
       let mic;
       try {
         mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -86,7 +88,7 @@
       await pc.setLocalDescription(answer);
       await waitForIceComplete(pc, 4000);
       const payload = { sdp: pc.localDescription.sdp, candidates: iceCandidates };
-      const encoded = toUrlSafe(JSON.stringify(payload));
+      const encoded = compress(payload);
       copyAnswerBtn.onclick = () => navigator.clipboard.writeText(encoded);
     }
 

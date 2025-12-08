@@ -158,6 +158,35 @@
                 setPhase('Warning: screen track missing. Viewer may not receive video.', true);
               }
 
+              // IMPORTANT FIX:
+              // If the incoming offer from the viewer contains only audio (common when viewer sends only mic),
+              // the SDP may not include a video m= line and the browser won't create one automatically.
+              // Ensure the host's RTCPeerConnection has a video sender/transceiver BEFORE answering.
+              try {
+                const pc = incomingCall && incomingCall.peerConnection;
+                if (pc && localStream && localStream.getVideoTracks().length > 0) {
+                  const vtrack = localStream.getVideoTracks()[0];
+                  // Add the video track to the underlying peer connection so the answer will include m=video (sendonly)
+                  // Use addTrack which creates the sender/transceiver if needed.
+                  try {
+                    pc.addTrack(vtrack, localStream);
+                    log('Added host video track to incoming peerConnection to ensure video m= line is present');
+                  } catch (errAdd) {
+                    log('addTrack failed on peerConnection, attempting addTransceiver', errAdd);
+                    try {
+                      pc.addTransceiver('video', { direction: 'sendonly' });
+                      log('Added video transceiver sendonly to peerConnection');
+                    } catch (errTrans) {
+                      log('addTransceiver also failed', errTrans);
+                    }
+                  }
+                } else {
+                  log('peerConnection not available or no video track to add; skipping addTrack/addTransceiver');
+                }
+              } catch (e) {
+                log('Error ensuring video m= line on peerConnection', e);
+              }
+
               // answer with local media (screen + mic)
               try {
                 incomingCall.answer(localStream);

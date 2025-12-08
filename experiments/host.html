@@ -1,269 +1,252 @@
-<!-- Minimal tailored host page for PeerJS-based signaling with fixed id.
-     - Fixed Peer ID: "unique-studyroom-for-host-and-visually-impaired"
-     - Retries if the ID is taken
-     - Uses Google STUN and openrelay TURN
-     - Shares screen + mic
-     - Shows a frame of what the viewer sees, mute/unmute, end session
-     - Detailed status messages and debug log capture via window.getHostDebugLogs()
--->
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Host — PeerSharing</title>
-<style>
-  :root{
-    --bg:#0b0b0b; --fg:#f4f4f4; --accent:#ffcc00;
-  }
-  html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;}
-  body{background:var(--bg);color:var(--fg);display:flex;flex-direction:column;gap:12px;padding:16px;}
-  #controls{display:flex;gap:12px;align-items:center;}
-  button{background:var(--accent);color:#000;border:none;padding:10px 14px;border-radius:8px;font-weight:700;cursor:pointer;}
-  #statusBox{background:#111;padding:12px;border-radius:8px;min-height:48px;flex:1;overflow:auto;}
-  #previewFrame{width:420px;height:236px;background:#222;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;}
-  video{width:100%;height:100%;object-fit:contain;background:#000;}
-  #bigStatus{font-size:16px;font-weight:700;}
-  #mutebtn,#endbtn{padding:8px 10px;}
-  @media(max-width:700px){ #previewFrame{width:100%;height:200px;} }
-</style>
+  <meta charset="utf-8" />
+  <title>PeerSharing — Host</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+  <style>
+    :root{--bg:#0b0b0b;--fg:#f8f8f2;--accent:#ffcc00;}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial;}
+    #container{display:flex;flex-direction:column;height:100%;gap:10px;padding:12px;}
+    .center{display:flex;align-items:center;justify-content:center;}
+    #startBtn{font-size:20px;padding:14px 24px;border-radius:12px;border:4px solid var(--accent);background:var(--fg);color:var(--bg);cursor:pointer}
+    #status{font-size:16px;padding:12px;border-radius:8px;background:#111;min-height:56px;white-space:pre-wrap;overflow:auto;}
+    #previewFrame{flex:1;background:#000;border:4px solid #222;display:flex;align-items:center;justify-content:center;position:relative;}
+    video#preview{max-width:100%;max-height:100%;border:2px solid #333;box-shadow:0 0 12px rgba(0,0,0,0.5);}
+    #controls{display:flex;gap:8px;justify-content:center;padding:8px;}
+    button.action{font-size:16px;padding:8px 12px;border-radius:8px;border:2px solid var(--accent);background:var(--bg);color:var(--fg);cursor:pointer}
+    button.danger{border-color:#ff4444;color:#ffdddd}
+    #smallNote{font-size:12px;color:#999;padding:4px 0;}
+    @media (prefers-contrast: more){#startBtn{border-color:#fff}}
+  </style>
 </head>
 <body>
-  <h1>Host — PeerSharing</h1>
+  <div id="container">
+    <div class="center">
+      <button id="startBtn" aria-label="Start session as host">Start Session (Host)</button>
+    </div>
 
-  <div id="controls">
-    <button id="startBtn">Start session (share screen + mic)</button>
-    <div id="previewFrame" aria-live="polite">
-      <span id="previewPlaceholder">Preview (what viewer will see)</span>
-      <video id="previewVideo" autoplay playsinline muted style="display:none"></video>
-    </div>
-    <div>
-      <div style="display:flex;gap:8px;margin-bottom:8px;">
-        <button id="mutebtn" disabled>Mute mic</button>
-        <button id="endbtn" disabled>End session</button>
+    <div id="status" aria-live="polite">Ready.</div>
+
+    <div id="previewFrame" aria-hidden="false">
+      <div id="previewWrapper" class="center">
+        <video id="preview" autoplay muted playsinline></video>
       </div>
-      <div id="bigStatus" aria-live="polite">Idle</div>
     </div>
+
+    <div id="controls" aria-hidden="true">
+      <button id="muteBtn" class="action">Mute</button>
+      <button id="endBtn" class="action danger">End Session</button>
+    </div>
+
+    <div id="smallNote">Signaling via PeerJS — host id: "unique-studyroom-for-host-and-visually-impaired"</div>
   </div>
 
-  <div id="statusBox" aria-live="polite"></div>
-
-  <!-- Hidden audio element to play viewer mic -->
-  <audio id="viewerAudio" autoplay></audio>
-
-  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-    // Debug log capture for host
+    // debug logs accessible via copy(window.getDebugLogs())
     (function(){
-      const logs = [];
-      function log(...args){
-        const str = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-        const time = new Date().toISOString();
-        const entry = `[HOST ${time}] ${str}`;
-        logs.push(entry);
-        console.log(entry);
-        const box = document.getElementById('statusBox');
-        const big = document.getElementById('bigStatus');
-        box.innerText = logs.slice(-20).join('\n');
-        big.innerText = str;
+      const HOST_ID = "unique-studyroom-for-host-and-visually-impaired";
+      const ICE_SERVERS = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelay", credential: "openrelay" }
+      ];
+      const RETRY_DELAY_MS = 3000;
+
+      let peer = null;
+      let hostStream = null;
+      let currentCall = null;
+      let debugLogs = [];
+      function dbg(...args){
+        const t = new Date().toISOString();
+        const msg = `[${t}] ${args.map(a=> (typeof a==='object'?JSON.stringify(a):a)).join(' ')}`;
+        debugLogs.push(msg);
+        console.log(msg);
+        updateStatus(msg);
       }
-      window.hostLog = log;
-      window.getHostDebugLogs = () => logs.join('\n');
-      // Note: in devtools you can use copy(window.getHostDebugLogs())
-    })();
+      window.getDebugLogs = () => debugLogs.join('\n');
 
-    const FIXED_ID = "unique-studyroom-for-host-and-visually-impaired";
-    const ICE_SERVERS = [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "turn:openrelay.metered.ca:443", username: "openrelay", credential: "openrelay" }
-    ];
+      const startBtn = document.getElementById('startBtn');
+      const statusEl = document.getElementById('status');
+      const preview = document.getElementById('preview');
+      const controls = document.getElementById('controls');
+      const muteBtn = document.getElementById('muteBtn');
+      const endBtn = document.getElementById('endBtn');
 
-    let peer = null;
-    let hostStream = null;
-    let viewerCall = null;
-    let retryTimer = null;
-    let isMuted = false;
-
-    const startBtn = document.getElementById('startBtn');
-    const muteBtn = document.getElementById('mutebtn');
-    const endBtn = document.getElementById('endbtn');
-    const previewVideo = document.getElementById('previewVideo');
-    const previewPlaceholder = document.getElementById('previewPlaceholder');
-    const viewerAudio = document.getElementById('viewerAudio');
-
-    startBtn.addEventListener('click', startSession);
-    muteBtn.addEventListener('click', toggleMute);
-    endBtn.addEventListener('click', endSession);
-
-    async function startSession(){
-      startBtn.disabled = true;
-      try {
-        hostLog('USER ACTION: startSession: requesting screen & mic permissions...');
-        // Request screen and mic separately and merge
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).catch(e => {
-          hostLog('getDisplayMedia error:', e);
-          throw e;
-        });
-        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(e => {
-          hostLog('getUserMedia (mic) error:', e);
-          throw e;
-        });
-
-        // Combine tracks (prefer mic for microphone audio)
-        hostStream = new MediaStream([
-          ...screenStream.getVideoTracks(),
-          ...micStream.getAudioTracks()
-        ]);
-        hostLog('Obtained hostStream, tracks:', hostStream.getTracks().map(t => t.kind+'('+t.id+')'));
-        // Show preview for host
-        previewPlaceholder.style.display = 'none';
-        previewVideo.style.display = 'block';
-        previewVideo.srcObject = hostStream;
-        previewVideo.muted = true;
-
-        muteBtn.disabled = false;
-        endBtn.disabled = false;
-
-        initPeerWithRetry();
-      } catch (err) {
-        hostLog('startSession failed:', err);
-        startBtn.disabled = false;
+      function updateStatus(txt){
+        statusEl.textContent = txt;
       }
-    }
 
-    function initPeerWithRetry(){
-      hostLog('initPeerWithRetry: creating Peer with fixed id:', FIXED_ID);
-      // If there's an existing peer, destroy it first
-      if(peer && !peer.destroyed){
-        try{ peer.destroy(); } catch(e){ hostLog('error destroying previous peer', e); }
-      }
-      // Create Peer with fixed id and ICE servers
-      peer = new Peer(FIXED_ID, {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
-        config: { iceServers: ICE_SERVERS },
-        debug: 2
-      });
-
-      peer.on('open', id => {
-        hostLog('Peer open with id:', id);
-        window.currentHostPeerId = id;
-      });
-
-      peer.on('error', err => {
-        hostLog('Peer error event:', err && (err.type || err.message || err));
-        // Common message when id is already taken varies. We'll retry on any error that prevents usage.
-        // If ID is taken / unavailable, schedule retry loop.
-        const msg = (err && (err.message || '')).toLowerCase();
-        if(msg.includes('could not connect to peer') || msg.includes('id already taken') || msg.includes('unavailable') || msg.includes('already exists')){
-          hostLog('Peer id appears unavailable. Will retry in 3000ms');
-          scheduleRetry();
-        } else {
-          // For other errors, also attempt retry but slower
-          hostLog('Peer error (non-specific). Will retry in 5000ms');
-          scheduleRetry(5000);
-        }
-      });
-
-      peer.on('disconnected', () => {
-        hostLog('Peer disconnected event. Scheduling retry...');
-        scheduleRetry(3000);
-      });
-
-      peer.on('close', () => {
-        hostLog('Peer close event.');
-      });
-
-      // Incoming call from viewer (viewer will call the fixed id)
-      peer.on('call', incomingCall => {
-        hostLog('Incoming call from viewer:', incomingCall.peer);
-        // Answer with hostStream (screen + mic)
+      async function getHostMedia(){
+        updateStatus('Requesting screen capture & microphone permission...');
+        dbg('requesting media: getDisplayMedia & getUserMedia (mic)');
         try {
-          incomingCall.answer(hostStream);
-          hostLog('Answered incoming call with hostStream.');
-        } catch (e) {
-          hostLog('Failed to answer call:', e);
+          const screen = await navigator.mediaDevices.getDisplayMedia({video:true, audio:false});
+          const mic = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+          const out = new MediaStream([
+            ...screen.getVideoTracks(),
+            ...mic.getAudioTracks()
+          ]);
+          dbg('media acquired', {videoTracks: screen.getVideoTracks().length, audioTracks: mic.getAudioTracks().length});
+          return out;
+        } catch (err){
+          dbg('media permission denied or error', err && err.message);
+          throw err;
         }
-        setupCallHandlers(incomingCall);
-      });
-    }
-
-    function scheduleRetry(ms = 3000){
-      if(retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => {
-        hostLog('Retry timer triggered. Re-initializing peer...');
-        initPeerWithRetry();
-      }, ms);
-    }
-
-    function setupCallHandlers(call){
-      // Clean up previous call if any
-      if(viewerCall && viewerCall.close){
-        try { viewerCall.close(); } catch(e){ hostLog('Error closing previous call', e); }
       }
-      viewerCall = call;
-      hostLog('setupCallHandlers: binding events for call:', call.peer);
 
-      call.on('stream', remoteStream => {
-        hostLog('Received remote stream from viewer (likely their mic). Tracks:', remoteStream.getTracks().map(t=>t.kind+'('+t.id+')'));
-        // Play viewer mic locally for host to hear
-        viewerAudio.srcObject = remoteStream;
-      });
-
-      call.on('close', () => {
-        hostLog('Call closed by remote peer');
-        viewerAudio.srcObject = null;
-      });
-
-      call.on('error', err => {
-        hostLog('Call error:', err);
-      });
-    }
-
-    function toggleMute(){
-      if(!hostStream) return;
-      const audioTracks = hostStream.getAudioTracks();
-      if(audioTracks.length === 0) {
-        hostLog('No audio tracks to toggle.');
-        return;
+      function attachPreview(stream){
+        preview.srcObject = stream;
       }
-      isMuted = !isMuted;
-      audioTracks.forEach(t => t.enabled = !isMuted);
-      muteBtn.textContent = isMuted ? 'Unmute mic' : 'Mute mic';
-      hostLog('Mic toggled. isMuted=', isMuted);
-    }
 
-    function endSession(){
-      hostLog('End session requested by host.');
-      try {
-        // Close call
-        if(viewerCall && viewerCall.close) viewerCall.close();
-        // Destroy peer
-        if(peer && !peer.destroyed) peer.destroy();
-        // Stop local tracks
-        if(hostStream){
-          hostStream.getTracks().forEach(t => {
-            try{ t.stop(); } catch(e){ /* ignore */ }
-          });
-          hostStream = null;
+      function initPeerWithRetry(){
+        dbg('attempting to create Peer with fixed id', HOST_ID);
+        updateStatus('Creating Peer with id "'+HOST_ID+'" ... (retrying if taken)');
+        tryCreatePeer().catch(e=> {
+          dbg('fatal peer creation error', e && e.message);
+          updateStatus('Error creating peer: '+(e && e.message));
+        });
+      }
+
+      function makePeer(){
+        const p = new Peer(HOST_ID, {
+          debug: 2,
+          config: { iceServers: ICE_SERVERS }
+        });
+        return p;
+      }
+
+      async function tryCreatePeer(){
+        let attempt = 0;
+        while (true){
+          attempt++;
+          dbg('peer create attempt #' + attempt);
+          updateStatus('Peer creation attempt #' + attempt + ' ...');
+          try {
+            peer = makePeer();
+            let openResolved = false;
+            await new Promise((resolve, reject) => {
+              const onOpen = (id) => {
+                openResolved = true;
+                dbg('peer open', id);
+                peer.off('error', onError);
+                resolve();
+              };
+              const onError = (err) => {
+                dbg('peer error event', err && err.type, err && err.message);
+                peer.off('open', onOpen);
+                reject(err);
+              };
+              // events
+              peer.once('open', onOpen);
+              peer.once('error', onError);
+              // handle incoming calls
+              peer.on('call', async (call) => {
+                dbg('incoming call from', call.peer);
+                updateStatus('Incoming connection from viewer: ' + call.peer + '\nAnswering with host screen+mic...');
+                currentCall = call;
+                try {
+                  call.answer(hostStream);
+                  dbg('answered call, now waiting for remote stream (viewer mic)');
+                  call.on('stream', remoteStream => {
+                    dbg('received remote stream from viewer', {tracks: remoteStream.getAudioTracks().length});
+                    // play viewer audio locally
+                    playRemoteAudio(remoteStream);
+                    updateStatus('Connected: viewer audio receiving.\nSession established.');
+                    // hide status/messages now that session is established
+                    setTimeout(()=> updateStatus(''), 800);
+                    // show controls
+                    controls.setAttribute('aria-hidden','false');
+                  });
+                  call.on('close', ()=>{
+                    dbg('call closed by remote');
+                    updateStatus('Viewer disconnected.');
+                    controls.setAttribute('aria-hidden','true');
+                    currentCall = null;
+                  });
+                } catch (err){
+                  dbg('error answering call', err && err.message);
+                }
+              });
+            });
+            // if resolved, break loop
+            break;
+          } catch (err){
+            // Known id taken error usually has type 'unavailable-id' or message includes 'taken'
+            const msg = err && (err.type || err.message || err);
+            dbg('peer create failed', msg);
+            // destroy peer instance if exists
+            try { peer && peer.destroy(); } catch(e){}
+            const isTaken = (err && (err.type === 'unavailable-id' || /taken/i.test(err.message || '')));
+            if (isTaken){
+              updateStatus('ID taken. Retrying in ' + (RETRY_DELAY_MS/1000) + 's ... (ID "'+HOST_ID+'")');
+              dbg('id taken, will retry after delay');
+              await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+              continue;
+            } else {
+              throw err;
+            }
+          }
         }
-      } catch (e){
-        hostLog('Error ending session:', e);
-      } finally {
+        dbg('peer creation succeeded, now waiting for incoming viewer connections');
+        updateStatus('Peer ready. Waiting for viewer to connect to id "'+HOST_ID+'"...');
+      }
+
+      function playRemoteAudio(stream){
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.srcObject = stream;
+        audio.play().catch(e => dbg('audio play error', e && e.message));
+      }
+
+      startBtn.addEventListener('click', async function(){
+        startBtn.disabled = true;
+        try {
+          hostStream = await getHostMedia();
+          attachPreview(hostStream);
+          dbg('preview attached');
+          // show short message
+          updateStatus('Media ready. Creating Peer and listening for viewer...');
+          initPeerWithRetry();
+        } catch (err){
+          updateStatus('Could not get required media: ' + (err && err.message));
+          startBtn.disabled = false;
+        }
+      });
+
+      muteBtn.addEventListener('click', ()=>{
+        if (!hostStream) return;
+        const audioTracks = hostStream.getAudioTracks();
+        if (!audioTracks.length) return;
+        const enabled = audioTracks[0].enabled;
+        audioTracks.forEach(t => t.enabled = !enabled);
+        muteBtn.textContent = enabled ? 'Unmute' : 'Mute';
+        dbg('host mic ' + (enabled ? 'muted' : 'unmuted'));
+      });
+
+      endBtn.addEventListener('click', ()=>{
+        dbg('end session requested by host');
+        updateStatus('Ending session...');
+        // close call
+        try { currentCall && currentCall.close(); } catch(e){}
+        try { peer && peer.destroy(); dbg('peer destroyed'); } catch(e){}
+        try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); dbg('host tracks stopped'); } catch(e){}
+        controls.setAttribute('aria-hidden','true');
+        preview.srcObject = null;
         startBtn.disabled = false;
-        muteBtn.disabled = true;
-        endBtn.disabled = true;
-        previewVideo.srcObject = null;
-        previewVideo.style.display = 'none';
-        previewPlaceholder.style.display = 'block';
-        document.getElementById('bigStatus').innerText = 'Session ended';
-      }
-    }
+        updateStatus('Session ended. Ready.');
+      });
 
-    // Expose minimal helper for copying logs: use copy(window.getHostDebugLogs()) from console
-    hostLog('Host page loaded. Ready.');
+      // Clean up on unload
+      window.addEventListener('beforeunload', ()=>{
+        try { peer && peer.destroy(); } catch(e){}
+        try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); } catch(e){}
+      });
+
+      // initial state
+      updateStatus('Ready. Press Start Session to begin.\nHost will share screen and mic. Viewer will connect using fixed id.');
+      dbg('host page loaded');
+    })();
   </script>
 </body>
 </html>

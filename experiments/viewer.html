@@ -1,250 +1,174 @@
-<!-- Viewer page tailored for legally blind users:
-     - Very large, high-contrast center button to connect (microphone only)
-     - After pressing, button replaced by detailed connection messages
-     - Viewer initiates the call to the fixed host id
-     - Viewer displays only the host's shared screen full-window
-     - Touch-based zoom & pan (no visible UI elements)
-     - Detailed debug logs via window.getViewerDebugLogs()
--->
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Viewer — PeerSharing</title>
-<style>
-  html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,Segoe UI,Roboto,Arial;}
-  #root{height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;position:relative;overflow:hidden}
-  #connectBtn{
-    background:#fff;color:#000;border-radius:24px;padding:28px 36px;font-size:36px;font-weight:900;border:6px solid #000;
-    touch-action:manipulation;box-shadow:0 6px 0 rgba(0,0,0,0.6);
-  }
-  #statusOverlay{
-    position:absolute;top:12px;left:12px;right:12px;background:rgba(0,0,0,0.6);padding:12px;border-radius:10px;color:#fff;max-height:30vh;overflow:auto;
-    font-size:16px;font-weight:700;
-  }
-  #videoContainer{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000;touch-action:none;}
-  video{max-width:100%;max-height:100%;object-fit:contain;transform-origin:0 0;}
-  /* Hide default controls and focus */
-  button:focus{outline:3px solid #ff0;}
-</style>
+  <meta charset="utf-8" />
+  <title>PeerSharing — Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+  <style>
+    :root{--bg:#000;--fg:#fff;--accent:#00ff66}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial;}
+    .center{display:flex;align-items:center;justify-content:center;}
+    #bigBtn{
+      position:fixed;inset:0;margin:auto;width:88vw;max-width:680px;height:200px;border-radius:20px;
+      background:var(--fg);color:var(--bg);font-size:36px;font-weight:700;border:6px solid var(--accent);
+      display:flex;align-items:center;justify-content:center;text-align:center;z-index:1000;cursor:pointer;
+      box-shadow:0 6px 24px rgba(0,0,0,0.6);
+    }
+    #status{position:fixed;top:8px;left:8px;right:8px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.6);font-size:18px;z-index:1001;white-space:pre-wrap;}
+    video#remote{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;touch-action:none;}
+    /* viewer should have no visible controls; zoom/pan handled by gestures */
+  </style>
 </head>
 <body>
-  <div id="root">
-    <div id="videoContainer" aria-live="polite" role="application">
-      <!-- Full-window video player -->
-      <video id="hostVideo" autoplay playsinline controlslist="nodownload noremoteplayback" style="display:none"></video>
-    </div>
+  <div id="status" aria-live="polite">Ready.</div>
+  <div id="bigBtn" role="button" aria-label="Connect as viewer">Connect to Studyroom</div>
 
-    <button id="connectBtn" aria-label="Connect to helper (large high contrast)"><span id="btnText">CONNECT</span></button>
+  <video id="remote" autoplay playsinline></video>
 
-    <div id="statusOverlay" aria-live="polite" style="display:none"></div>
-  </div>
-
-  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-    // Debug logs for viewer
     (function(){
-      const logs = [];
-      function log(...args){
-        const str = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-        const time = new Date().toISOString();
-        const entry = `[VIEWER ${time}] ${str}`;
-        logs.push(entry);
-        console.log(entry);
-        const overlay = document.getElementById('statusOverlay');
-        if(overlay) overlay.innerText = logs.slice(-40).join('\n');
+      const HOST_ID = "unique-studyroom-for-host-and-visually-impaired";
+      const ICE_SERVERS = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelay", credential: "openrelay" }
+      ];
+
+      let debugLogs = [];
+      function dbg(...args){
+        const t = new Date().toISOString();
+        const msg = `[${t}] ${args.map(a=> (typeof a==='object'?JSON.stringify(a):a)).join(' ')}`;
+        debugLogs.push(msg);
+        console.log(msg);
+        updateStatus(msg);
       }
-      window.viewerLog = log;
-      window.getViewerDebugLogs = () => logs.join('\n');
-      // copy(window.getViewerDebugLogs()) works in devtools
-    })();
+      window.getDebugLogs = () => debugLogs.join('\n');
 
-    const FIXED_ID = "unique-studyroom-for-host-and-visually-impaired";
-    const ICE_SERVERS = [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "turn:openrelay.metered.ca:443", username: "openrelay", credential: "openrelay" }
-    ];
+      const bigBtn = document.getElementById('bigBtn');
+      const statusEl = document.getElementById('status');
+      const remote = document.getElementById('remote');
+      let peer = null;
+      let localMic = null;
+      let call = null;
 
-    let peer = null;
-    let localStream = null;
-    let call = null;
+      function updateStatus(txt){ statusEl.textContent = txt; }
 
-    const connectBtn = document.getElementById('connectBtn');
-    const btnText = document.getElementById('btnText');
-    const statusOverlay = document.getElementById('statusOverlay');
-    const hostVideo = document.getElementById('hostVideo');
-    const videoContainer = document.getElementById('videoContainer');
-
-    // Transform state for pinch/zoom/pan
-    let scale = 1, lastScale = 1;
-    let translateX = 0, translateY = 0;
-    let lastX = 0, lastY = 0;
-    let pointers = new Map();
-
-    connectBtn.addEventListener('click', startViewerSession);
-
-    async function startViewerSession(){
-      // Big visible button pressed
-      connectBtn.disabled = true;
-      statusOverlay.style.display = 'block';
-      viewerLog('USER ACTION: connect pressed - requesting mic permission...');
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        viewerLog('Obtained local mic stream, tracks:', localStream.getTracks().map(t=>t.kind+'('+t.id+')'));
-      } catch (err) {
-        viewerLog('getUserMedia failed:', err);
-        connectBtn.disabled = false;
-        return;
-      }
-
-      // Hide the connect button and show progress messages
-      connectBtn.style.display = 'none';
-      showStatus('Initializing peer and connecting to host...');
-      // Create a Peer (auto id)
-      peer = new Peer(null, {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
-        config: { iceServers: ICE_SERVERS },
-        debug: 2
-      });
-
-      peer.on('open', id => {
-        viewerLog('Peer open with id:', id);
-        showStatus('Peer ready. Calling host...');
-        // Call the host's fixed id and send mic stream
+      async function getMic(){
+        dbg('requesting microphone permission');
         try {
-          call = peer.call(FIXED_ID, localStream);
-          if(!call){
-            viewerLog('peer.call returned null or undefined');
-            showStatus('Failed to call host. See logs.');
-            return;
-          }
-          setupCallHandlers(call);
-          showStatus('Calling host...');
-        } catch(e) {
-          viewerLog('Error initiating call to host:', e);
-          showStatus('Call initiation error. See logs.');
+          const mic = await navigator.mediaDevices.getUserMedia({audio:true, video:false});
+          dbg('microphone granted', {tracks: mic.getAudioTracks().length});
+          return mic;
+        } catch (err){
+          dbg('microphone permission denied', err && err.message);
+          throw err;
         }
-      });
-
-      peer.on('error', err => {
-        viewerLog('Peer error:', err);
-        showStatus('Peer error: ' + (err && (err.message || err)));
-      });
-
-      peer.on('disconnected', () => {
-        viewerLog('Peer disconnected');
-        showStatus('Disconnected from signaling server.');
-      });
-    }
-
-    function setupCallHandlers(c){
-      call = c;
-      viewerLog('setupCallHandlers: bound for call to host:', call.peer);
-
-      call.on('stream', remoteStream => {
-        viewerLog('Received remote stream (host screen+mic?), tracks:', remoteStream.getTracks().map(t=>t.kind+'('+t.id+')'));
-        // The viewer should only display the shared screen (video). We'll attach the stream to the video element.
-        hostVideo.srcObject = remoteStream;
-        hostVideo.style.display = 'block';
-        hostVideo.play().catch(e => viewerLog('hostVideo play() rejected:', e));
-        // Once connected, hide status overlay quickly
-        setTimeout(()=> statusOverlay.style.display = 'none', 800);
-        viewerLog('Connection established and rendering remote stream.');
-      });
-
-      call.on('close', () => {
-        viewerLog('Call closed by remote');
-        showStatus('Session ended by host.');
-        cleanup();
-      });
-
-      call.on('error', err => {
-        viewerLog('Call error:', err);
-        showStatus('Call error: ' + (err && (err.message || err)));
-      });
-    }
-
-    function showStatus(text){
-      statusOverlay.style.display = 'block';
-      statusOverlay.innerText = text + '\n\n(For debugging: copy(window.getViewerDebugLogs()).)';
-    }
-
-    function cleanup(){
-      if(call && call.close) try{ call.close(); }catch(e){viewerLog('Error closing call', e);}
-      if(peer && !peer.destroyed) try{ peer.destroy(); }catch(e){viewerLog('Error destroying peer', e);}
-      if(localStream){
-        localStream.getTracks().forEach(t => { try{ t.stop(); }catch(e){} });
-        localStream = null;
       }
-      hostVideo.srcObject = null;
-      hostVideo.style.display = 'none';
-      connectBtn.style.display = 'block';
-      connectBtn.disabled = false;
-    }
 
-    // --- Touch based zoom & pan (no visual chrome) ---
-    // Support pointer events for multi-touch and mouse
-    videoContainer.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
-    videoContainer.addEventListener('wheel', onWheel, { passive: false });
-
-    function onPointerDown(e){
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      videoContainer.setPointerCapture?.(e.pointerId);
-      if(pointers.size === 1){
-        lastX = e.clientX - translateX;
-        lastY = e.clientY - translateY;
-      } else if(pointers.size === 2){
-        lastScale = scale;
+      function setupPeerAndCall(localStream){
+        dbg('creating anonymous Peer and calling host', HOST_ID);
+        peer = new Peer(null, { debug:2, config: { iceServers: ICE_SERVERS }});
+        peer.on('open', id => {
+          dbg('viewer peer open', id);
+          updateStatus('Connecting to host "'+HOST_ID+'" ...');
+          call = peer.call(HOST_ID, localStream);
+          call.on('stream', remoteStream => {
+            dbg('received host stream (screen+audio)');
+            // show remote stream fullscreen
+            remote.srcObject = remoteStream;
+            // once remote stream arrives, hide status and big button
+            bigBtn.style.display = 'none';
+            // Clear status after a short informative message
+            setTimeout(()=> updateStatus(''), 600);
+          });
+          call.on('close', ()=> {
+            dbg('call closed by host or network');
+            updateStatus('Connection closed.');
+          });
+          call.on('error', (e)=> {
+            dbg('call error', e && e.message);
+            updateStatus('Call error: '+(e && e.message));
+          });
+        });
+        peer.on('error', e => {
+          dbg('peer error', e && e.message);
+          updateStatus('Peer error: '+(e && e.message));
+        });
       }
-    }
-    function onPointerMove(e){
-      if(!pointers.has(e.pointerId)) return;
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if(pointers.size === 1){
-        // pan
-        const p = pointers.values().next().value;
-        translateX = e.clientX - lastX;
-        translateY = e.clientY - lastY;
-        applyTransform();
-      } else if(pointers.size === 2){
-        // pinch to zoom
-        const it = pointers.values();
-        const p1 = it.next().value, p2 = it.next().value;
-        const dx = p2.x - p1.x, dy = p2.y - p1.y;
-        const dist = Math.hypot(dx, dy);
-        if(!window._lastDist){
-          window._lastDist = dist;
-        } else {
-          const delta = dist / window._lastDist;
-          scale = Math.min(6, Math.max(1, lastScale * delta));
+
+      // Simple pinch-zoom & pan for touchscreens (no UI controls)
+      (function addTouchTransform(){
+        let scale = 1, lastScale = 1;
+        let pos = {x:0,y:0}, lastPos = {x:0,y:0};
+        let pointers = new Map();
+        function applyTransform(){
+          remote.style.transform = `translate(${pos.x}px, ${pos.y}px) scale(${scale})`;
+        }
+        function onPointerDown(e){
+          pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
+          remote.setPointerCapture && remote.setPointerCapture(e.pointerId);
+          if (pointers.size === 1){
+            lastPos = {x: e.clientX - pos.x, y: e.clientY - pos.y};
+          }
+        }
+        function onPointerMove(e){
+          if (!pointers.has(e.pointerId)) return;
+          pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
+          if (pointers.size === 1){
+            const p = Array.from(pointers.values())[0];
+            pos.x = e.clientX - lastPos.x;
+            pos.y = e.clientY - lastPos.y;
+          } else if (pointers.size >= 2){
+            const pts = Array.from(pointers.values());
+            const a = pts[0], b = pts[1];
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const dist = Math.hypot(dx,dy);
+            if (!lastScale) lastScale = scale;
+            if (!remote._baseDist) remote._baseDist = dist;
+            const ratio = dist / remote._baseDist;
+            scale = Math.max(1, Math.min(4, lastScale * ratio));
+          }
           applyTransform();
         }
-      }
-    }
-    function onPointerUp(e){
-      pointers.delete(e.pointerId);
-      window._lastDist = null;
-    }
-    function onWheel(e){
-      // pinch via wheel
-      e.preventDefault();
-      const delta = -e.deltaY * 0.001;
-      scale = Math.min(6, Math.max(1, scale + delta));
-      applyTransform();
-    }
-    function applyTransform(){
-      hostVideo.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-    }
+        function onPointerUp(e){
+          pointers.delete(e.pointerId);
+          if (pointers.size < 2) {
+            lastScale = scale;
+            remote._baseDist = null;
+          }
+        }
+        remote.style.transition = 'transform 0.02s';
+        remote.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
+      })();
 
-    // Accessible initial help
-    viewerLog('Viewer page loaded. Waiting for user to press large CONNECT button.');
+      bigBtn.addEventListener('click', async ()=>{
+        bigBtn.disabled = true;
+        updateStatus('Requesting microphone... (viewer will share mic only)');
+        dbg('viewer start button clicked');
+        try {
+          const micStream = await getMic();
+          localMic = micStream;
+          updateStatus('Microphone granted. Creating connection to host...');
+          setupPeerAndCall(localMic);
+        } catch (err){
+          updateStatus('Microphone permission required. ' + (err && err.message));
+          bigBtn.disabled = false;
+        }
+      });
+
+      // cleanup on unload
+      window.addEventListener('beforeunload', ()=>{
+        try { call && call.close(); } catch(e){}
+        try { peer && peer.destroy(); } catch(e){}
+        try { localMic && localMic.getTracks().forEach(t=>t.stop()); } catch(e){}
+      });
+
+      dbg('viewer page loaded. Ready.');
+      updateStatus('Ready. Press the big CONNECT button (center) to begin.');
+    })();
   </script>
 </body>
 </html>

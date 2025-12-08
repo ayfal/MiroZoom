@@ -14,7 +14,7 @@
 </head>
 <body>
   <div id="videoFrame">
-    <video id="remoteVideo" autoplay playsinline></video>
+    <video id="previewVideo" autoplay playsinline muted></video>
   </div>
   <div class="controls">
     <button id="muteBtn">Mute</button>
@@ -40,67 +40,96 @@
       }
     });
 
-    const remoteVideo = document.getElementById('remoteVideo');
+    const previewVideo = document.getElementById('previewVideo');
     const muteBtn = document.getElementById('muteBtn');
     const endBtn = document.getElementById('endBtn');
 
-    let currentCall = null;
+    let localStream = null;
     let dataConn = null;
+    let currentCall = null;
     let audioMuted = false;
 
-    peer.on('open', id => {
-      // ready to accept incoming call from viewer
-      console.log('Peer open as', id);
-    });
+    // start capturing the host's screen automatically
+    async function startShare() {
+      try {
+        localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      } catch (e) {
+        console.error('Screen share denied or failed', e);
+        return;
+      }
 
-    peer.on('call', call => {
-      // store call and answer (no local stream)
-      currentCall = call;
-      call.answer(); // answer with no stream; we only receive
-      call.on('stream', stream => {
-        remoteVideo.srcObject = stream;
-        remoteVideo.play().catch(()=>{});
-      });
-      // setup data connection to send/receive control messages
-      dataConn = peer.connect(call.peer);
-      dataConn.on('open', () => {
-        dataConn.on('data', d => {
+      // show preview to host (muted to avoid audio loop)
+      previewVideo.srcObject = localStream;
+      previewVideo.play().catch(()=>{});
+
+      // if a viewer already connected, call them immediately
+      if (dataConn && dataConn.open) {
+        makeCallTo(dataConn.peer);
+      }
+    }
+
+    function makeCallTo(peerId) {
+      try {
+        if (currentCall) currentCall.close();
+        currentCall = peer.call(peerId, localStream);
+        currentCall.on('close', () => { currentCall = null; });
+        currentCall.on('error', () => { currentCall = null; });
+      } catch (e) {
+        console.error('Call error', e);
+      }
+    }
+
+    // accept incoming data connections from viewer(s)
+    peer.on('connection', conn => {
+      dataConn = conn;
+      conn.on('open', () => {
+        // when viewer connects, immediately call it with the captured stream
+        if (localStream) makeCallTo(conn.peer);
+        conn.on('data', d => {
           if (d === 'end') cleanupAndClose();
         });
       });
-      call.on('close', () => cleanupUI());
-      call.on('error', () => cleanupUI());
+      conn.on('close', () => { dataConn = null; });
+      conn.on('error', () => { dataConn = null; });
     });
 
+    peer.on('open', id => {
+      // automatically request screen capture when host peer is ready
+      console.log('Host peer open as', id);
+      startShare();
+    });
+
+    // mute/unmute (controls outgoing audio track)
     muteBtn.addEventListener('click', () => {
       audioMuted = !audioMuted;
-      remoteVideo.muted = audioMuted;
+      if (localStream) {
+        localStream.getAudioTracks().forEach(t => t.enabled = !audioMuted);
+      }
       muteBtn.textContent = audioMuted ? 'Unmute' : 'Mute';
     });
 
     endBtn.addEventListener('click', () => {
-      // inform viewer to stop if possible
       try { if (dataConn && dataConn.open) dataConn.send('end'); } catch(e){}
       cleanupAndClose();
     });
 
     function cleanupUI() {
-      remoteVideo.srcObject = null;
-      currentCall = null;
-      dataConn = null;
+      previewVideo.srcObject = null;
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+      }
+      if (currentCall) { try { currentCall.close(); } catch(e){} currentCall = null; }
+      if (dataConn) { try { dataConn.close(); } catch(e){} dataConn = null; }
       muteBtn.textContent = 'Mute';
-      remoteVideo.muted = false;
     }
 
     function cleanupAndClose() {
-      try { if (currentCall) currentCall.close(); } catch(e){}
       try { peer.destroy(); } catch(e){}
       cleanupUI();
-      // optional: navigate away or leave page blank
       document.body.innerHTML = '<div style="color:#fff;padding:20px;background:#000">Session ended.</div>';
     }
 
-    // defensive: handle peer errors
     peer.on('error', err => {
       console.error('Peer error', err);
     });

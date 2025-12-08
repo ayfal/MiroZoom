@@ -36,50 +36,49 @@
       }
     });
 
-    let localStream = null;
     let dataConn = null;
-
-    async function startShare() {
-      try {
-        localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      } catch (e) {
-        console.error('Screen share denied or failed', e);
-        return;
-      }
-
-      // show local captured screen full-window (no UI elements)
-      video.srcObject = localStream;
-      try { await video.play(); } catch(e){}
-
-      // call host and send stream
-      const call = peer.call(HOST_ID, localStream);
-      // open data connection so host can send stop message
-      dataConn = peer.connect(HOST_ID);
-      dataConn.on('open', () => {
-        dataConn.on('data', d => {
-          if (d === 'end') stopSharingAndClose();
-        });
-      });
-      call.on('close', () => stopSharingAndClose());
-      call.on('error', () => stopSharingAndClose());
-    }
-
-    function stopSharingAndClose() {
-      try {
-        if (localStream) {
-          localStream.getTracks().forEach(t => t.stop());
-          localStream = null;
-        }
-      } catch(e){}
-      try { peer.destroy(); } catch(e){}
-      // keep page minimal; stop video display
-      video.srcObject = null;
-    }
+    let currentCall = null;
 
     peer.on('open', id => {
-      // automatically begin capture and call host
-      startShare();
+      // automatically connect to host so host can call back
+      dataConn = peer.connect(HOST_ID);
+      dataConn.on('open', () => {
+        // ready to receive call from host
+        dataConn.on('data', d => {
+          if (d === 'end') stopReceiving();
+        });
+      });
+      dataConn.on('error', () => { dataConn = null; });
+      dataConn.on('close', () => { dataConn = null; });
     });
+
+    // incoming call from host -> answer and display stream fullscreen
+    peer.on('call', call => {
+      try {
+        currentCall = call;
+        call.answer(); // answer with no local stream (viewer only receives)
+        call.on('stream', stream => {
+          video.srcObject = stream;
+          video.play().catch(()=>{});
+        });
+        call.on('close', () => stopReceiving());
+        call.on('error', () => stopReceiving());
+      } catch(e) {
+        console.error('Call handling error', e);
+      }
+    });
+
+    function stopReceiving() {
+      try {
+        if (video.srcObject) {
+          // received stream is remote; stop displaying it
+          video.srcObject = null;
+        }
+      } catch(e){}
+      try { if (currentCall) currentCall.close(); } catch(e){}
+      currentCall = null;
+      try { peer.destroy(); } catch(e){}
+    }
 
     peer.on('error', err => {
       console.error('Peer error', err);

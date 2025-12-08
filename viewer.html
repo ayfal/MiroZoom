@@ -113,6 +113,24 @@
       });
     }
 
+    // Clear the remote video (blank the view)
+    function clearRemoteView() {
+      try {
+        // detach any media object
+        if (remote.srcObject) {
+          // do not stop remote tracks here; just detach to avoid showing a frozen frame
+          remote.srcObject = null;
+        }
+        // ensure video element shows nothing
+        remote.pause();
+        try { remote.removeAttribute('src'); } catch {}
+        try { remote.load(); } catch {}
+      } catch (e) { /* ignore */ }
+      setStatus('Session ended');
+      // restore some visible UI so user isn't stuck on a blank page if desired
+      document.body.classList.remove('session-started');
+    }
+
     async function prepareReceiver(comp) {
       try {
         setStatus('Parsing offer and preparing session (no mic yet)...');
@@ -121,9 +139,38 @@
         const offer = JSON.parse(json);
 
         pc = new RTCPeerConnection();
+
         pc.ontrack = (evt) => {
-          remote.srcObject = evt.streams[0];
+          const stream = evt.streams[0];
+          // attach stream to video element
+          remote.srcObject = stream;
+          // listen for remote track end to clear the view (when host stops sharing)
+          stream.getTracks().forEach(track => {
+            track.addEventListener('ended', () => {
+              // small delay to allow other tracks to end if multiple
+              setTimeout(() => {
+                const anyLive = stream.getTracks().some(t => t.readyState === 'live' || t.enabled);
+                if (!anyLive) clearRemoteView();
+              }, 50);
+            });
+          });
         };
+
+        // clear view if connection closes or fails
+        pc.addEventListener('connectionstatechange', () => {
+          if (!pc) return;
+          const s = pc.connectionState;
+          if (s === 'disconnected' || s === 'failed' || s === 'closed') {
+            clearRemoteView();
+          }
+        });
+        pc.addEventListener('iceconnectionstatechange', () => {
+          if (!pc) return;
+          const s = pc.iceConnectionState;
+          if (s === 'disconnected' || s === 'failed' || s === 'closed') {
+            clearRemoteView();
+          }
+        });
 
         await pc.setRemoteDescription(offer);
         setStatus('Ready. Click the button to share microphone and copy answer.');

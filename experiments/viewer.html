@@ -225,11 +225,11 @@
 
          const offer = await pc.createOffer();
          await pc.setLocalDescription(offer);
-        dbg('sending SDP offer to host');
-        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
-        dbg('sending SDP offer to host');
-        setProgress('Offer sent — waiting for answer', 70);
-        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
+         // wait a short time for ICE candidates to be gathered so remote has usable SDPs
+         await waitForIceGatheringComplete(pc, 6000);
+         dbg('sending SDP offer to host');
+         setProgress('Offer sent — waiting for answer', 70);
+         dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
        }
 
       function cleanup(){

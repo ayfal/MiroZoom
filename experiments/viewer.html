@@ -21,10 +21,24 @@
 
   <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
+    // viewer debug helper
+    window.viewerDebugLogs = window.viewerDebugLogs || [];
+    function vdbg(...args) {
+      try {
+        const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+        console.log('[VIEWER DEBUG]', msg);
+        window.viewerDebugLogs.push(`[${new Date().toISOString()}] ${msg}`);
+        if (window.viewerDebugLogs.length > 500) window.viewerDebugLogs.shift();
+      } catch (e) { console.log('[VIEWER DEBUG] (log error)', e); }
+    }
+    window.getViewerDebugLogs = () => (window.viewerDebugLogs || []).slice();
+
     const HOST_ID = 'unique-studyroom-for-host-and-visually-impaired';
     const video = document.getElementById('screenVideo');
     const overlay = document.getElementById('overlay');
     const waiting = document.getElementById('waiting');
+
+    vdbg('Initializing viewer script', { HOST_ID });
 
     const peer = new Peer({
       config: {
@@ -39,70 +53,93 @@
       }
     });
 
+    vdbg('Peer object created, waiting for open');
+
     let dataConn = null;
     let currentCall = null;
 
-    function hideWaiting() { overlay.style.display = 'none'; }
-    function showWaiting(msg = 'Waiting for host') { waiting.textContent = msg; overlay.style.display = 'flex'; }
+    function hideWaiting() { overlay.style.display = 'none'; vdbg('hideWaiting'); }
+    function showWaiting(msg = 'Waiting for host') { waiting.textContent = msg; overlay.style.display = 'flex'; vdbg('showWaiting', msg); }
 
     peer.on('open', id => {
+      vdbg('peer.on(open)', id);
       // automatically connect to host so host can call back
-      dataConn = peer.connect(HOST_ID);
-      dataConn.on('open', () => {
-        // ready to receive call from host
-        dataConn.on('data', d => {
-          if (d === 'end') stopReceiving();
+      try {
+        dataConn = peer.connect(HOST_ID);
+        vdbg('dataConn created to', HOST_ID);
+        dataConn.on('open', () => {
+          vdbg('dataConn open with', dataConn.peer);
+          dataConn.on('data', d => {
+            vdbg('dataConn received', d);
+            if (d === 'end') {
+              vdbg('received end via dataConn');
+              stopReceiving();
+            }
+          });
         });
-      });
-      dataConn.on('error', () => { dataConn = null; });
-      dataConn.on('close', () => { dataConn = null; showWaiting('Waiting for host'); });
+        dataConn.on('error', err => { vdbg('dataConn error', err); dataConn = null; showWaiting('Connection error'); });
+        dataConn.on('close', () => { vdbg('dataConn closed'); dataConn = null; showWaiting('Waiting for host'); });
+      } catch (e) {
+        vdbg('dataConn setup failed', e);
+      }
       showWaiting('Waiting for host');
     });
 
     peer.on('call', call => {
+      vdbg('peer.on(call) from', call.peer);
       try {
         currentCall = call;
+        call.on('close', () => vdbg('incoming call closed'));
+        call.on('error', err => vdbg('incoming call error', err));
         call.answer(); // answer with no local stream (viewer only receives)
+        vdbg('call.answer() sent');
         call.on('stream', stream => {
-          dbg && dbg('viewer received stream');
+          vdbg('call.on(stream) received', { tracks: stream.getTracks().map(t => t.kind + ':' + t.id) });
           // set the remote stream as the video source
           video.srcObject = stream;
-          // wait for play success before confirming to host
           const tryConfirm = () => {
             if (dataConn && dataConn.open) {
-              try { dataConn.send('viewing'); } catch(e){ console.warn('failed send viewing', e); }
+              try {
+                dataConn.send('viewing');
+                vdbg('sent viewing confirmation to host');
+              } catch(e){ vdbg('failed send viewing', e); }
+            } else {
+              vdbg('no dataConn open to send viewing');
             }
           };
           video.play().then(() => {
+            vdbg('video.play() succeeded');
             hideWaiting();
             tryConfirm();
-          }).catch(() => {
-            // still send viewing even if autoplay blocks; host expects confirmation
+          }).catch(err => {
+            vdbg('video.play() failed or blocked', err);
+            // still confirm viewing to host so host can show preview
             hideWaiting();
             tryConfirm();
           });
         });
-        call.on('close', () => stopReceiving());
-        call.on('error', () => stopReceiving());
       } catch(e) {
+        vdbg('Call handling error', e);
         console.error('Call handling error', e);
       }
     });
 
     function stopReceiving() {
+      vdbg('stopReceiving called');
       try {
         if (video.srcObject) {
           video.srcObject = null;
+          vdbg('cleared video.srcObject');
         }
-      } catch(e){}
-      try { if (currentCall) currentCall.close(); } catch(e){}
+      } catch(e){ vdbg('error clearing video.srcObject', e); }
+      try { if (currentCall) { currentCall.close(); vdbg('closed currentCall'); } } catch(e){ vdbg('error closing currentCall', e); }
       currentCall = null;
-      try { peer.destroy(); } catch(e){}
+      try { peer.destroy(); vdbg('peer.destroy() called'); } catch(e){ vdbg('peer.destroy() failed', e); }
       showWaiting('Session ended');
     }
 
     peer.on('error', err => {
-      console.error('Peer error', err);
+      vdbg('Peer error', err && err.message ? err.message : err);
       showWaiting('Connection error');
     });
 
@@ -115,7 +152,6 @@
       video.style.transform = `translate(${pos.x}px, ${pos.y}px) scale(${scale})`;
     }
 
-    // touch handlers
     video.addEventListener('touchstart', e => {
       if (e.touches.length === 1) {
         startTouches = [{x:e.touches[0].clientX, y:e.touches[0].clientY}];
@@ -161,7 +197,6 @@
       }
     });
 
-    // mouse support for desktop: wheel to zoom, drag to pan
     let dragging = false;
     let dragStart = {x:0,y:0};
 
@@ -183,7 +218,6 @@
       const delta = -e.deltaY;
       const factor = delta > 0 ? 1.08 : 0.92;
       const newScale = Math.max(0.5, Math.min(5, scale * factor));
-      // zoom towards cursor: adjust pos to keep cursor point stable
       const rect = video.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;

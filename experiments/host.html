@@ -12,7 +12,6 @@
     button{flex:0 0 auto;padding:8px 14px;font-size:16px;border-radius:6px;border:0;background:#222;color:#fff}
     #status {margin-left:8px;font-weight:600}
     #waitingBadge {position:absolute;left:12px;top:12px;background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:6px;font-size:18px;display:none}
-    /* center big status */
     #centerStatus {
       position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
       z-index:20; background:rgba(0,0,0,0.7); color:#fff; padding:18px 28px;
@@ -34,6 +33,8 @@
     <button id="startBtn">Start Sharing</button>
     <div id="status">Idle</div>
   </div>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
 
   <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
@@ -74,10 +75,12 @@
     const statusEl = document.getElementById('status');
     const waitingBadge = document.getElementById('waitingBadge');
     const centerStatus = document.getElementById('centerStatus');
+    const remoteAudio = document.getElementById('remoteAudio');
 
-    let localStream = null;
+    let localStream = null;      // screen + host mic
     let dataConn = null;
-    let currentCall = null;
+    let currentCall = null;      // outgoing to viewer (screen)
+    let incomingMicCall = null;  // incoming call from viewer (viewer mic)
     let audioMuted = false;
 
     let shareStarted = false;
@@ -94,8 +97,28 @@
       dbg('startShare() called (user-gesture)');
       setStatus('Starting share...');
       try {
-        localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        dbg('getDisplayMedia success', { tracks: localStream.getTracks().map(t => t.kind + ':' + t.id) });
+        // screen (may include system audio)
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        dbg('getDisplayMedia success', { tracks: screenStream.getTracks().map(t => t.kind + ':' + t.id) });
+
+        // capture host mic in same gesture and append to stream
+        let micStream = null;
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          dbg('getUserMedia(mic) success', { tracks: micStream.getTracks().map(t => t.kind + ':' + t.id) });
+        } catch (e) {
+          dbg('getUserMedia(mic) failed or denied', e && e.message ? e.message : e);
+        }
+
+        // combine: use a new MediaStream, add screen video + all audio tracks (screen + mic)
+        localStream = new MediaStream();
+        // add video tracks from screen
+        screenStream.getVideoTracks().forEach(t => localStream.addTrack(t));
+        // add screen audio tracks first
+        screenStream.getAudioTracks().forEach(t => localStream.addTrack(t));
+        // add mic tracks (if any)
+        if (micStream) micStream.getAudioTracks().forEach(t => localStream.addTrack(t));
+
       } catch (e) {
         dbg('Screen share denied or failed', e && e.message ? e.message : e);
         shareStarted = false;
@@ -146,6 +169,7 @@
       }
     }
 
+    // accept incoming data connections from viewer(s)
     peer.on('connection', conn => {
       dbg('peer.on(connection) from', conn.peer);
       dataConn = conn;
@@ -188,6 +212,32 @@
       });
     });
 
+    // accept incoming calls (viewer may call with mic-only stream)
+    peer.on('call', call => {
+      dbg('peer.on(call) incoming from', call.peer);
+      try {
+        // answer without sending anything (we receive their mic)
+        call.answer();
+        incomingMicCall = call;
+        call.on('stream', stream => {
+          dbg('received incoming mic stream', { tracks: stream.getTracks().map(t => t.kind + ':' + t.id) });
+          // play incoming mic via audio element
+          try {
+            remoteAudio.srcObject = stream;
+            remoteAudio.muted = false; // host user already performed gesture, allowed to play audio
+            remoteAudio.play().catch(err => dbg('remoteAudio.play() failed', err));
+            setStatus('Receiving viewer mic');
+          } catch(e) {
+            dbg('failed to attach remote audio', e);
+          }
+        });
+        call.on('close', () => { dbg('incomingMicCall closed'); incomingMicCall = null; setStatus('Viewer mic disconnected'); });
+        call.on('error', err => { dbg('incomingMicCall error', err); incomingMicCall = null; setStatus('Mic call error'); });
+      } catch (e) {
+        dbg('error answering incoming call', e);
+      }
+    });
+
     peer.on('open', id => {
       dbg('peer.on(open)', id);
       setStatus('Peer ready');
@@ -200,7 +250,6 @@
     startBtn.addEventListener('click', async () => {
       if (!shareStarted) {
         dbg('Start button clicked -> starting share');
-        // this click satisfies transient activation requirement
         await startShare();
         startBtn.textContent = 'End Session';
       } else {
@@ -211,14 +260,11 @@
       }
     });
 
-    // mute/unmute (controls outgoing audio track)
+    // mute/unmute (controls outgoing audio track playback from remote viewer and host mic visibility)
     muteBtn.addEventListener('click', () => {
       audioMuted = !audioMuted;
-      if (localStream) {
-        localStream.getAudioTracks().forEach(t => { t.enabled = !audioMuted; dbg('audio track set enabled=', t.enabled); });
-      } else {
-        dbg('mute toggle requested but no localStream available');
-      }
+      // mute host's preview audio (preview is already muted), but also mute remoteAudio
+      remoteAudio.muted = audioMuted;
       muteBtn.textContent = audioMuted ? 'Unmute' : 'Mute';
       dbg('muteBtn toggled', { audioMuted });
     });
@@ -226,11 +272,13 @@
     function cleanupUI() {
       dbg('cleanupUI called');
       previewVideo.srcObject = null;
+      remoteAudio.srcObject = null;
       if (localStream) {
         localStream.getTracks().forEach(t => { try { t.stop(); dbg('stopped track', t.kind, t.id); } catch(e){} });
         localStream = null;
       }
       if (currentCall) { try { currentCall.close(); dbg('closed currentCall'); } catch(e){} currentCall = null; }
+      if (incomingMicCall) { try { incomingMicCall.close(); dbg('closed incomingMicCall'); } catch(e){} incomingMicCall = null; }
       if (dataConn) { try { dataConn.close(); dbg('closed dataConn'); } catch(e){} dataConn = null; }
       muteBtn.textContent = 'Mute';
       shareStarted = false;

@@ -13,11 +13,13 @@
       touch-action: none; transform-origin: 0 0;
       -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color: transparent;
     }
+    #micHint { position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,0.6);color:#fff;padding:8px 12px;border-radius:8px;font-size:16px }
   </style>
 </head>
 <body>
   <div id="overlay"><div id="waiting">Waiting for host</div></div>
   <video id="screenVideo" autoplay playsinline></video>
+  <div id="micHint">Tap to enable microphone</div>
 
   <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
@@ -37,6 +39,7 @@
     const video = document.getElementById('screenVideo');
     const overlay = document.getElementById('overlay');
     const waiting = document.getElementById('waiting');
+    const micHint = document.getElementById('micHint');
 
     // ensure autoplay isn't blocked: start muted so video.play() is allowed
     video.muted = true;
@@ -61,6 +64,9 @@
 
     let dataConn = null;
     let currentCall = null;
+    let micCall = null;
+    let localMicStream = null;
+    let micEnabled = false;
 
     function hideWaiting() { overlay.style.display = 'none'; vdbg('hideWaiting'); }
     function showWaiting(msg = 'Waiting for host') { waiting.textContent = msg; overlay.style.display = 'flex'; vdbg('showWaiting', msg); }
@@ -99,11 +105,10 @@
         currentCall = call;
         call.on('close', () => { vdbg('incoming call closed'); showWaiting('Waiting for host'); });
         call.on('error', err => { vdbg('incoming call error', err); showWaiting('Call error'); });
-        call.answer(); // answer with no local stream (viewer only receives)
+        call.answer(); // answer with no local stream (viewer only receives screen)
         vdbg('call.answer() sent');
         call.on('stream', stream => {
           vdbg('call.on(stream) received', { tracks: stream.getTracks().map(t => t.kind + ':' + t.id) });
-          // set the remote stream as the video source
           video.srcObject = stream;
           const tryConfirm = () => {
             if (dataConn && dataConn.open) {
@@ -118,14 +123,12 @@
           video.play().then(() => {
             vdbg('video.play() succeeded');
             showWaiting('Viewing');
-            // hide after short delay so user sees message then full-screen content is visible
             setTimeout(hideWaiting, 300);
             tryConfirm();
           }).catch(err => {
             vdbg('video.play() failed or blocked', err);
             showWaiting('Viewing (autoplay blocked)');
             setTimeout(hideWaiting, 300);
-            // still confirm viewing to host so host can show preview
             tryConfirm();
           });
         });
@@ -134,6 +137,40 @@
         console.error('Call handling error', e);
       }
     });
+
+    // allow viewer to enable mic via tap/click; this will getUserMedia and call host with mic stream
+    async function enableMic() {
+      if (micEnabled) return;
+      vdbg('enableMic requested (user gesture)');
+      try {
+        localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        vdbg('getUserMedia(mic) success', { tracks: localMicStream.getAudioTracks().map(t=>t.id) });
+        micEnabled = true;
+        micHint.textContent = 'Microphone enabled';
+        // call host with mic-only stream
+        try {
+          micCall = peer.call(HOST_ID, localMicStream);
+          vdbg('Outgoing mic call created to host');
+          micCall.on('close', () => { vdbg('micCall closed'); micCall = null; micEnabled = false; micHint.textContent = 'Tap to enable microphone'; });
+          micCall.on('error', err => { vdbg('micCall error', err); micCall = null; micEnabled = false; micHint.textContent = 'Tap to enable microphone'; });
+        } catch(e) {
+          vdbg('mic call failed', e);
+        }
+      } catch (e) {
+        vdbg('getUserMedia(mic) failed or denied', e && e.message ? e.message : e);
+        micHint.textContent = 'Mic denied';
+      }
+    }
+
+    // wire the whole page to allow a single tap to enable mic (touch or click)
+    function onGestureForMic() {
+      enableMic().catch(e => vdbg('enableMic threw', e));
+      // only run once per page load
+      document.removeEventListener('touchstart', onGestureForMic, true);
+      document.removeEventListener('click', onGestureForMic, true);
+    }
+    document.addEventListener('touchstart', onGestureForMic, { once:true, capture:true });
+    document.addEventListener('click', onGestureForMic, { once:true, capture:true });
 
     function stopReceiving() {
       vdbg('stopReceiving called');

@@ -12,6 +12,13 @@
     button{flex:0 0 auto;padding:8px 14px;font-size:16px;border-radius:6px;border:0;background:#222;color:#fff}
     #status {margin-left:8px;font-weight:600}
     #waitingBadge {position:absolute;left:12px;top:12px;background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:6px;font-size:18px;display:none}
+    /* center big status */
+    #centerStatus {
+      position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+      z-index:20; background:rgba(0,0,0,0.7); color:#fff; padding:18px 28px;
+      border-radius:10px; font-size:22px; font-weight:700; text-align:center;
+      pointer-events:none;
+    }
   </style>
 </head>
 <body>
@@ -19,6 +26,9 @@
     <div id="waitingBadge">Not sharing</div>
     <video id="previewVideo" autoplay playsinline muted></video>
   </div>
+
+  <div id="centerStatus">Idle</div>
+
   <div class="controls">
     <button id="muteBtn">Mute</button>
     <button id="startBtn">Start Sharing</button>
@@ -29,16 +39,17 @@
   <script>
     const HOST_ID = 'unique-studyroom-for-host-and-visually-impaired';
 
-    // replace dbg implementation with working logger
+    // host debug helper + getter
     window.debugLogs = window.debugLogs || [];
     function dbg(...args) {
       try {
         const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
         console.log('[HOST DEBUG]', msg);
         window.debugLogs.push(`[${new Date().toISOString()}] ${msg}`);
-        if (window.debugLogs.length > 500) window.debugLogs.shift();
+        if (window.debugLogs.length > 1000) window.debugLogs.shift();
       } catch (e) { console.log('[HOST DEBUG] (log error)', e); }
     }
+    window.getHostDebugLogs = () => (window.debugLogs || []).slice();
 
     dbg('Initializing host script', { HOST_ID });
 
@@ -62,23 +73,26 @@
     const startBtn = document.getElementById('startBtn');
     const statusEl = document.getElementById('status');
     const waitingBadge = document.getElementById('waitingBadge');
+    const centerStatus = document.getElementById('centerStatus');
 
     let localStream = null;
     let dataConn = null;
     let currentCall = null;
     let audioMuted = false;
 
-    let peerReady = false;
     let shareStarted = false;
     let viewerConfirmed = false;
 
     function setStatus(text) {
       statusEl.textContent = text;
+      centerStatus.textContent = text;
       waitingBadge.style.display = text && text.toLowerCase().includes('waiting') ? 'block' : 'none';
+      dbg('UI status ->', text);
     }
 
     async function startShare() {
       dbg('startShare() called (user-gesture)');
+      setStatus('Starting share...');
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         dbg('getDisplayMedia success', { tracks: localStream.getTracks().map(t => t.kind + ':' + t.id) });
@@ -89,14 +103,15 @@
         return;
       }
 
-      // Do NOT show preview yet. Wait for viewer confirmation.
+      // Do NOT show preview until viewer confirms viewing
       shareStarted = true;
       viewerConfirmed = false;
       setStatus('Waiting for viewer');
 
-      // try to call viewer if connected
+      // call viewer if connected
       if (dataConn && dataConn.open) {
         dbg('dataConn open; placing call to', dataConn.peer);
+        setStatus('Calling viewer');
         makeCallTo(dataConn.peer);
       } else {
         dbg('no viewer connected yet; will call when viewer connects');
@@ -113,8 +128,19 @@
         }
         currentCall = peer.call(peerId, localStream);
         dbg('Outgoing call created', { callPeer: peerId });
-        currentCall.on('close', () => { dbg('currentCall closed'); currentCall = null; setStatus('Waiting for viewer'); viewerConfirmed = false; previewVideo.srcObject = null; });
-        currentCall.on('error', err => { dbg('currentCall error', err); currentCall = null; setStatus('Call error'); });
+        setStatus('Calling viewer');
+        currentCall.on('close', () => {
+          dbg('currentCall closed');
+          currentCall = null;
+          setStatus('Waiting for viewer');
+          viewerConfirmed = false;
+          previewVideo.srcObject = null;
+        });
+        currentCall.on('error', err => {
+          dbg('currentCall error', err);
+          currentCall = null;
+          setStatus('Call error');
+        });
       } catch (e) {
         dbg('Call error', e && e.message ? e.message : e);
       }
@@ -123,9 +149,11 @@
     peer.on('connection', conn => {
       dbg('peer.on(connection) from', conn.peer);
       dataConn = conn;
+      setStatus('Viewer connected (data)');
       conn.on('open', () => {
         dbg('dataConn open with', conn.peer);
-        // if we already have a stream, call viewer immediately
+        setStatus('Viewer connected');
+        // if we already have a stream, call viewer
         if (localStream) {
           makeCallTo(conn.peer);
         }
@@ -146,20 +174,29 @@
           }
         });
       });
-      conn.on('close', () => { dbg('dataConn closed for', conn.peer); dataConn = null; setStatus('Waiting for viewer'); viewerConfirmed = false; previewVideo.srcObject = null; });
-      conn.on('error', err => { dbg('dataConn error', err); dataConn = null; setStatus('Error'); });
+      conn.on('close', () => {
+        dbg('dataConn closed for', conn.peer);
+        dataConn = null;
+        setStatus('Viewer disconnected');
+        viewerConfirmed = false;
+        previewVideo.srcObject = null;
+      });
+      conn.on('error', err => {
+        dbg('dataConn error', err);
+        dataConn = null;
+        setStatus('Data error');
+      });
     });
 
     peer.on('open', id => {
       dbg('peer.on(open)', id);
-      peerReady = true;
-      setStatus('Idle');
+      setStatus('Peer ready');
     });
 
     peer.on('disconnected', () => { dbg('peer disconnected'); setStatus('Disconnected'); });
     peer.on('close', () => { dbg('peer closed'); setStatus('Closed'); });
 
-    // Start/End button behavior (Start triggers getDisplayMedia via explicit user gesture)
+    // Start/End button behavior
     startBtn.addEventListener('click', async () => {
       if (!shareStarted) {
         dbg('Start button clicked -> starting share');
@@ -212,10 +249,9 @@
 
     peer.on('error', err => {
       dbg('Peer error', err && err.message ? err.message : err);
+      setStatus('Peer error');
     });
 
-    // expose a quick getter for logs so you can copy them from DevTools
-    window.getHostDebugLogs = () => (window.debugLogs || []).slice();
     dbg('host script loaded and ready');
   </script>
 </body>

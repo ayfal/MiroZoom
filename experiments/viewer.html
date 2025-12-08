@@ -67,12 +67,15 @@
 
     peer.on('open', id => {
       vdbg('peer.on(open)', id);
+      showWaiting('Connected to signaling');
       // automatically connect to host so host can call back
       try {
         dataConn = peer.connect(HOST_ID);
         vdbg('dataConn created to', HOST_ID);
+        showWaiting('Connecting to host');
         dataConn.on('open', () => {
           vdbg('dataConn open with', dataConn.peer);
+          showWaiting('Connected to host');
           dataConn.on('data', d => {
             vdbg('dataConn received', d);
             if (d === 'end') {
@@ -85,16 +88,17 @@
         dataConn.on('close', () => { vdbg('dataConn closed'); dataConn = null; showWaiting('Waiting for host'); });
       } catch (e) {
         vdbg('dataConn setup failed', e);
+        showWaiting('Connection error');
       }
-      showWaiting('Waiting for host');
     });
 
     peer.on('call', call => {
       vdbg('peer.on(call) from', call.peer);
+      showWaiting('Incoming call');
       try {
         currentCall = call;
-        call.on('close', () => vdbg('incoming call closed'));
-        call.on('error', err => vdbg('incoming call error', err));
+        call.on('close', () => { vdbg('incoming call closed'); showWaiting('Waiting for host'); });
+        call.on('error', err => { vdbg('incoming call error', err); showWaiting('Call error'); });
         call.answer(); // answer with no local stream (viewer only receives)
         vdbg('call.answer() sent');
         call.on('stream', stream => {
@@ -113,12 +117,15 @@
           };
           video.play().then(() => {
             vdbg('video.play() succeeded');
-            hideWaiting();
+            showWaiting('Viewing');
+            // hide after short delay so user sees message then full-screen content is visible
+            setTimeout(hideWaiting, 300);
             tryConfirm();
           }).catch(err => {
             vdbg('video.play() failed or blocked', err);
+            showWaiting('Viewing (autoplay blocked)');
+            setTimeout(hideWaiting, 300);
             // still confirm viewing to host so host can show preview
-            hideWaiting();
             tryConfirm();
           });
         });

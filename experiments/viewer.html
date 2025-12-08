@@ -86,14 +86,14 @@
          peer = new Peer(null, { debug:2, config: { iceServers: ICE_SERVERS }});
          peer.on('open', id => {
            dbg('viewer peer open', id);
--          updateStatus('Connecting to host "'+HOST_ID+'" ...');
-+          setProgress('Connecting to host…', 40);
+          updateStatus('Connecting to host "'+HOST_ID+'" ...');
+          setProgress('Connecting to host…', 40);
            dc = peer.connect(HOST_ID, { reliable: true });
            dc.on('open', async () => {
              dbg('data connection open to host');
--            await createAndSendOffer(localStream);
-+            setProgress('Signaling connected', 50);
-+            await createAndSendOffer(localStream);
+            await createAndSendOffer(localStream);
+            setProgress('Signaling connected', 50);
+            await createAndSendOffer(localStream);
            });
            dc.on('data', async (msg) => {
              dbg('data from host', msg && msg.type);
@@ -103,13 +103,13 @@
                try {
                  // msg.sdp is a plain object (type/sdp) -> setRemoteDescription accepts that
                  await pc.setRemoteDescription(msg.sdp);
--                dbg('remote description set (answer)');
-+                dbg('remote description set (answer)');
-+                setProgress('Connected (establishing media)…', 75);
+                dbg('remote description set (answer)');
+                dbg('remote description set (answer)');
+                setProgress('Connected (establishing media)…', 75);
                } catch (e){
                  dbg('setRemoteDescription(answer) failed', e && e.message);
--                updateStatus('Failed to set remote description: ' + (e && e.message));
-+                setProgress('Failed to set remote description', 0);
+                updateStatus('Failed to set remote description: ' + (e && e.message));
+                setProgress('Failed to set remote description', 0);
                }
              } else if (msg.type === 'candidate') {
                try {
@@ -120,28 +120,28 @@
                }
              } else if (msg.type === 'error') {
                dbg('remote error', msg.message);
--              updateStatus('Remote error: '+ msg.message);
-+              setProgress('Remote error', 0);
+              updateStatus('Remote error: '+ msg.message);
+              setProgress('Remote error', 0);
              }
            });
            dc.on('close', ()=> {
              dbg('data connection closed by host');
              cleanup();
--            updateStatus('Signaling connection closed.');
-+            setProgress('Signaling connection closed', 0);
+            updateStatus('Signaling connection closed.');
+            setProgress('Signaling connection closed', 0);
            });
            dc.on('error', (e)=> {
              dbg('data connection error', e && (e.message || e));
--            updateStatus('Signaling error: ' + (e && e.message));
-+            setProgress('Signaling error', 0);
+            updateStatus('Signaling error: ' + (e && e.message));
+            setProgress('Signaling error', 0);
              bigBtn.disabled = false;
            });
          });
 
          peer.on('error', e => {
            dbg('peer error', e && e.message);
--          updateStatus('Peer error: '+(e && e.message));
-+          setProgress('Peer error', 0);
+          updateStatus('Peer error: '+(e && e.message));
+          setProgress('Peer error', 0);
            bigBtn.disabled = false;
          });
        }
@@ -156,9 +156,9 @@
 
          // add mic track(s) for sending back to host
          localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
--        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
-+        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
-+        setProgress('Creating offer', 60);
+        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
+        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
+        setProgress('Creating offer', 60);
 
          pc.onicecandidate = (ev) => {
            if (ev.candidate && dc && dc.open) {
@@ -176,33 +176,28 @@
            remote.muted = false;
            remote.play().then(()=> {
              dbg('remote video.play() succeeded');
--            bigBtn.style.display = 'none';
--            setTimeout(()=> updateStatus(''), 600);
--            document.body.classList.add('session-started');
-+            bigBtn.style.display = 'none';
-+            // hide progress UI now that media is playing
-+            hideProgress();
-+            document.body.classList.add('session-started');
+             bigBtn.style.display = 'none';
+             // hide progress UI now that media is playing
+             hideProgress();
+             document.body.classList.add('session-started');
            }).catch(err=> {
              dbg('remote play() failed', err && err.message);
              bigBtn.style.display = 'none';
              if ((ev.streams[0].getVideoTracks().length || 0) === 0) {
--              updateStatus('Connected: audio received but no video was sent by host.');
-+              setProgress('Connected: audio only', 100);
-             } else {
--              updateStatus('Connected but playback failed: ' + (err && err.message));
-+              setProgress('Connected but playback failed', 0);
-             }
+                setProgress('Connected: audio only', 100);
+              } else {
+                setProgress('Connected but playback failed', 0);
+              }
            });
          };
 
          const offer = await pc.createOffer();
          await pc.setLocalDescription(offer);
--        dbg('sending SDP offer to host');
--        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
-+        dbg('sending SDP offer to host');
-+        setProgress('Offer sent — waiting for answer', 70);
-+        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
+        dbg('sending SDP offer to host');
+        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
+        dbg('sending SDP offer to host');
+        setProgress('Offer sent — waiting for answer', 70);
+        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
        }
 
       function cleanup(){
@@ -236,8 +231,8 @@
       });
 
       dbg('viewer page loaded. Ready.');
--      updateStatus('Ready. Press the big CONNECT button (center) to begin.');
-+      setProgress('Ready. Press the big CONNECT button', 0);
+      updateStatus('Ready. Press the big CONNECT button (center) to begin.');
+      setProgress('Ready. Press the big CONNECT button', 0);
      })();
    </script>
  </body>

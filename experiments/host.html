@@ -44,7 +44,6 @@
   </div>
 
   <script>
-    // debug logs accessible via copy(window.getDebugLogs())
     (function(){
       const HOST_ID = "unique-studyroom-for-host-and-visually-impaired";
       const ICE_SERVERS = [
@@ -55,7 +54,8 @@
 
       let peer = null;
       let hostStream = null;
-      let currentCall = null;
+      let currentPC = null;
+      let currentDC = null;
       let debugLogs = [];
       function dbg(...args){
         const t = new Date().toISOString();
@@ -124,80 +124,30 @@
           updateStatus('Peer creation attempt #' + attempt + ' ...');
           try {
             peer = makePeer();
-            let openResolved = false;
             await new Promise((resolve, reject) => {
               const onOpen = (id) => {
-                openResolved = true;
                 dbg('peer open', id);
                 peer.off('error', onError);
                 resolve();
               };
               const onError = (err) => {
-                dbg('peer error event', err && err.type, err && err.message);
+                dbg('peer error event', err && (err.type || err.message));
                 peer.off('open', onOpen);
                 reject(err);
               };
-              // events
               peer.once('open', onOpen);
               peer.once('error', onError);
-              // handle incoming calls
-              peer.on('call', async (call) => {
-                dbg('incoming call from', call.peer);
-                updateStatus('Incoming connection from viewer: ' + call.peer + '\nAnswering with host screen+mic...');
-                currentCall = call;
-                try {
-                  // make sure we have media; try to reacquire if not present
-                  if (!hostStream) {
-                    dbg('no hostStream available, attempting to reacquire media');
-                    hostStream = await getHostMedia();
-                    attachPreview(hostStream);
-                  }
 
-                  // debug hostStream tracks
-                  dbg('hostStream tracks before answer', {
-                    videoTracks: hostStream.getVideoTracks().length,
-                    audioTracks: hostStream.getAudioTracks().length
-                  });
-                  hostStream.getVideoTracks().forEach((t,i)=> dbg(`host video[${i}]`, {id:t.id, kind:t.kind, enabled:t.enabled, readyState:t.readyState, label:t.label}));
-                  hostStream.getAudioTracks().forEach((t,i)=> dbg(`host audio[${i}]`, {id:t.id, kind:t.kind, enabled:t.enabled, readyState:t.readyState, label:t.label}));
-
-                  // ensure all tracks enabled
-                  hostStream.getTracks().forEach(t => { t.enabled = true; });
-
-                  // use a fresh MediaStream created from the current tracks to avoid track ownership/attachment edge-cases
-                  const answerStream = new MediaStream(hostStream.getTracks());
-                  dbg('answering call with cloned stream', {video: answerStream.getVideoTracks().length, audio: answerStream.getAudioTracks().length});
-                  call.answer(answerStream);
-
-                  dbg('answered call, now waiting for remote stream (viewer mic)');
-                  call.on('stream', remoteStream => {
-                    dbg('received remote stream from viewer', {tracks: remoteStream.getAudioTracks().length});
-                    // play viewer audio locally
-                    playRemoteAudio(remoteStream);
-                    updateStatus('Connected: viewer audio receiving.\nSession established.');
-                    // hide status/messages now that session is established
-                    setTimeout(()=> updateStatus(''), 800);
-                    // show controls
-                    controls.setAttribute('aria-hidden','false');
-                  });
-                  call.on('close', ()=>{
-                    dbg('call closed by remote');
-                    updateStatus('Viewer disconnected.');
-                    controls.setAttribute('aria-hidden','true');
-                    currentCall = null;
-                  });
-                } catch (err){
-                  dbg('error answering call', err && err.message);
-                }
+              // accept incoming data connections for SDP signaling
+              peer.on('connection', dc => {
+                dbg('incoming data connection from', dc.peer);
+                setupDataConnection(dc);
               });
             });
-            // if resolved, break loop
             break;
           } catch (err){
-            // Known id taken error usually has type 'unavailable-id' or message includes 'taken'
             const msg = err && (err.type || err.message || err);
             dbg('peer create failed', msg);
-            // destroy peer instance if exists
             try { peer && peer.destroy(); } catch(e){}
             const isTaken = (err && (err.type === 'unavailable-id' || /taken/i.test(err.message || '')));
             if (isTaken){
@@ -210,7 +160,7 @@
             }
           }
         }
-        dbg('peer creation succeeded, now waiting for incoming viewer connections');
+        dbg('peer creation succeeded, now waiting for incoming viewer DataConnections');
         updateStatus('Peer ready. Waiting for viewer to connect to id "'+HOST_ID+'"...');
       }
 
@@ -221,16 +171,119 @@
         audio.play().catch(e => dbg('audio play error', e && e.message));
       }
 
+      function setupDataConnection(dc){
+        // If there's already a connected viewer, close previous.
+        if (currentDC && currentDC.peer !== dc.peer) {
+          dbg('another viewer attempted to connect; closing previous connection');
+          try { currentDC.close(); } catch(e){}
+          try { currentPC && currentPC.close(); } catch(e){}
+          currentDC = null;
+          currentPC = null;
+        }
+        currentDC = dc;
+
+        dc.on('open', () => {
+          dbg('data connection open with viewer', dc.peer);
+          updateStatus('Viewer connected (signaling). Waiting for offer...');
+        });
+
+        dc.on('data', async (msg) => {
+          dbg('data from viewer', msg && msg.type);
+          if (!msg || !msg.type) return;
+          try {
+            if (msg.type === 'offer') {
+              // Create RTCPeerConnection and answer
+              dbg('received SDP offer, creating RTCPeerConnection to answer');
+              if (currentPC) {
+                dbg('closing existing PC before creating new one');
+                try { currentPC.close(); } catch(e){}
+              }
+              const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+              currentPC = pc;
+
+              // Add host tracks before setting remote description
+              if (!hostStream) {
+                dbg('hostStream missing when offer arrived; attempting to reacquire');
+                try {
+                  hostStream = await getHostMedia();
+                  attachPreview(hostStream);
+                } catch(e){
+                  dbg('failed to acquire media while handling offer', e && e.message);
+                  dc.send({ type: 'error', message: 'Host media unavailable: ' + (e && e.message) });
+                  return;
+                }
+              }
+              dbg('adding host tracks to pc', {video: hostStream.getVideoTracks().length, audio: hostStream.getAudioTracks().length});
+              hostStream.getTracks().forEach(track => pc.addTrack(track, hostStream));
+
+              pc.onicecandidate = (ev) => {
+                if (ev.candidate) {
+                  dbg('sending ICE candidate to viewer');
+                  dc.send({type:'candidate', candidate: ev.candidate});
+                }
+              };
+
+              pc.ontrack = (ev) => {
+                dbg('host pc ontrack (viewer audio?)', {tracks: ev.streams[0] && ev.streams[0].getAudioTracks().length});
+                // play remote audio (viewer mic)
+                playRemoteAudio(ev.streams[0]);
+                updateStatus('Viewer audio receiving. Session established.');
+                setTimeout(()=> updateStatus(''), 800);
+                controls.setAttribute('aria-hidden','false');
+              };
+
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              dbg('sending SDP answer to viewer');
+              dc.send({ type:'answer', sdp: pc.localDescription });
+            } else if (msg.type === 'candidate') {
+              if (currentPC && msg.candidate) {
+                dbg('adding received candidate to pc');
+                try {
+                  await currentPC.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                } catch (e){
+                  dbg('addIceCandidate error', e && e.message);
+                }
+              } else dbg('no pc to add candidate to or invalid candidate');
+            } else if (msg.type === 'hangup') {
+              dbg('viewer requested hangup');
+              try { currentPC && currentPC.close(); } catch(e){}
+              try { currentDC && currentDC.close(); } catch(e){}
+              currentPC = null;
+              currentDC = null;
+              updateStatus('Viewer disconnected.');
+              controls.setAttribute('aria-hidden','true');
+            }
+          } catch (err){
+            dbg('error handling data message', err && err.message);
+          }
+        });
+
+        dc.on('close', () => {
+          dbg('data connection closed by viewer');
+          try { currentPC && currentPC.close(); } catch(e){}
+          currentPC = null;
+          currentDC = null;
+          updateStatus('Viewer disconnected.');
+          controls.setAttribute('aria-hidden','true');
+        });
+
+        dc.on('error', (e) => {
+          dbg('data connection error', e && (e.message || e));
+        });
+      }
+
       startBtn.addEventListener('click', async function(){
         startBtn.disabled = true;
         try {
           hostStream = await getHostMedia();
           attachPreview(hostStream);
           dbg('preview attached');
-          // show short message
           updateStatus('Media ready. Creating Peer and listening for viewer...');
           initPeerWithRetry();
         } catch (err){
+          dbg('could not get media', err && err.message);
           updateStatus('Could not get required media: ' + (err && err.message));
           startBtn.disabled = false;
         }
@@ -249,8 +302,9 @@
       endBtn.addEventListener('click', ()=>{
         dbg('end session requested by host');
         updateStatus('Ending session...');
-        // close call
-        try { currentCall && currentCall.close(); } catch(e){}
+        try { currentDC && currentDC.send({type:'hangup'}); } catch(e){}
+        try { currentPC && currentPC.close(); } catch(e){}
+        try { currentDC && currentDC.close(); } catch(e){}
         try { peer && peer.destroy(); dbg('peer destroyed'); } catch(e){}
         try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); dbg('host tracks stopped'); } catch(e){}
         controls.setAttribute('aria-hidden','true');
@@ -259,13 +313,13 @@
         updateStatus('Session ended. Ready.');
       });
 
-      // Clean up on unload
       window.addEventListener('beforeunload', ()=>{
+        try { currentPC && currentPC.close(); } catch(e){}
+        try { currentDC && currentDC.close(); } catch(e){}
         try { peer && peer.destroy(); } catch(e){}
         try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); } catch(e){}
       });
 
-      // initial state
       updateStatus('Ready. Press Start Session to begin.\nHost will share screen and mic. Viewer will connect using fixed id.');
       dbg('host page loaded');
     })();

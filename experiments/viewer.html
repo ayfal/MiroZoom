@@ -17,7 +17,6 @@
     }
     #status{position:fixed;top:8px;left:8px;right:8px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.6);font-size:18px;z-index:1001;white-space:pre-wrap;}
     video#remote{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;touch-action:none;}
-    /* viewer should have no visible controls; zoom/pan handled by gestures */
   </style>
 </head>
 <body>
@@ -49,7 +48,8 @@
       const remote = document.getElementById('remote');
       let peer = null;
       let localMic = null;
-      let call = null;
+      let dc = null;
+      let pc = null;
 
       function updateStatus(txt){ statusEl.textContent = txt; }
 
@@ -65,105 +65,111 @@
         }
       }
 
-      function setupPeerAndCall(localStream){
-        dbg('creating anonymous Peer and calling host', HOST_ID);
+      function setupPeerAndConnect(localStream){
+        dbg('creating anonymous Peer and connecting to host', HOST_ID);
         peer = new Peer(null, { debug:2, config: { iceServers: ICE_SERVERS }});
         peer.on('open', id => {
           dbg('viewer peer open', id);
           updateStatus('Connecting to host "'+HOST_ID+'" ...');
-          call = peer.call(HOST_ID, localStream);
-          call.on('stream', remoteStream => {
-            dbg('received host stream (screen+audio)', {
-              videoTracks: remoteStream.getVideoTracks().length,
-              audioTracks: remoteStream.getAudioTracks().length
-            });
-
-            // debug details for each track
-            remoteStream.getVideoTracks().forEach((t,i)=> dbg(`video track[${i}]`, {id:t.id, kind:t.kind, enabled:t.enabled, readyState:t.readyState, label:t.label}));
-            remoteStream.getAudioTracks().forEach((t,i)=> dbg(`audio track[${i}]`, {id:t.id, kind:t.kind, enabled:t.enabled, readyState:t.readyState, label:t.label}));
-
-            // attach stream to video element and attempt to play (user already interacted)
-            remote.srcObject = remoteStream;
-            remote.style.display = 'block';
-            remote.muted = false;
-            remote.play().then(()=> {
-              dbg('remote video.play() succeeded');
-              // once remote stream arrives, hide status and big button
-              bigBtn.style.display = 'none';
-              setTimeout(()=> updateStatus(''), 600);
-            }).catch(err=>{
-              dbg('remote video.play() failed', err && err.message);
-              // still hide the big button because stream arrived; show explanatory message
-              bigBtn.style.display = 'none';
-              if (remoteStream.getVideoTracks().length === 0) {
-                updateStatus('Connected: audio received but no video tracks were sent by host.');
-              } else {
-                updateStatus('Connected, but playback failed: ' + (err && err.message));
+          dc = peer.connect(HOST_ID, { reliable: true });
+          dc.on('open', async () => {
+            dbg('data connection open to host');
+            await createAndSendOffer(localStream);
+          });
+          dc.on('data', async (msg) => {
+            dbg('data from host', msg && msg.type);
+            if (!msg || !msg.type) return;
+            if (msg.type === 'answer') {
+              dbg('received SDP answer');
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                dbg('remote description set (answer)');
+              } catch (e){
+                dbg('setRemoteDescription(answer) failed', e && e.message);
+                updateStatus('Failed to set remote description: ' + (e && e.message));
               }
-            });
+            } else if (msg.type === 'candidate') {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                dbg('added remote ICE candidate');
+              } catch (e){
+                dbg('addIceCandidate error', e && e.message);
+              }
+            } else if (msg.type === 'error') {
+              dbg('remote error', msg.message);
+              updateStatus('Remote error: '+ msg.message);
+            }
           });
-          call.on('close', ()=> {
-            dbg('call closed by host or network');
-            updateStatus('Connection closed.');
+          dc.on('close', ()=> {
+            dbg('data connection closed by host');
+            cleanup();
+            updateStatus('Signaling connection closed.');
           });
-          call.on('error', (e)=> {
-            dbg('call error', e && e.message);
-            updateStatus('Call error: '+(e && e.message));
+          dc.on('error', (e)=> {
+            dbg('data connection error', e && (e.message || e));
+            updateStatus('Signaling error: ' + (e && e.message));
           });
         });
+
         peer.on('error', e => {
           dbg('peer error', e && e.message);
           updateStatus('Peer error: '+(e && e.message));
+          bigBtn.disabled = false;
         });
       }
 
-      // Simple pinch-zoom & pan for touchscreens (no UI controls)
-      (function addTouchTransform(){
-        let scale = 1, lastScale = 1;
-        let pos = {x:0,y:0}, lastPos = {x:0,y:0};
-        let pointers = new Map();
-        function applyTransform(){
-          remote.style.transform = `translate(${pos.x}px, ${pos.y}px) scale(${scale})`;
-        }
-        function onPointerDown(e){
-          pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
-          remote.setPointerCapture && remote.setPointerCapture(e.pointerId);
-          if (pointers.size === 1){
-            lastPos = {x: e.clientX - pos.x, y: e.clientY - pos.y};
+      async function createAndSendOffer(localStream){
+        dbg('creating RTCPeerConnection and adding local tracks');
+        pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+        // add mic track(s)
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
+
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate && dc && dc.open) {
+            dbg('sending ICE candidate to host');
+            dc.send({ type:'candidate', candidate: ev.candidate });
           }
-        }
-        function onPointerMove(e){
-          if (!pointers.has(e.pointerId)) return;
-          pointers.set(e.pointerId, {x:e.clientX,y:e.clientY});
-          if (pointers.size === 1){
-            const p = Array.from(pointers.values())[0];
-            pos.x = e.clientX - lastPos.x;
-            pos.y = e.clientY - lastPos.y;
-          } else if (pointers.size >= 2){
-            const pts = Array.from(pointers.values());
-            const a = pts[0], b = pts[1];
-            const dx = b.x - a.x, dy = b.y - a.y;
-            const dist = Math.hypot(dx,dy);
-            if (!lastScale) lastScale = scale;
-            if (!remote._baseDist) remote._baseDist = dist;
-            const ratio = dist / remote._baseDist;
-            scale = Math.max(1, Math.min(4, lastScale * ratio));
-          }
-          applyTransform();
-        }
-        function onPointerUp(e){
-          pointers.delete(e.pointerId);
-          if (pointers.size < 2) {
-            lastScale = scale;
-            remote._baseDist = null;
-          }
-        }
-        remote.style.transition = 'transform 0.02s';
-        remote.addEventListener('pointerdown', onPointerDown);
-        window.addEventListener('pointermove', onPointerMove);
-        window.addEventListener('pointerup', onPointerUp);
-        window.addEventListener('pointercancel', onPointerUp);
-      })();
+        };
+
+        pc.ontrack = (ev) => {
+          dbg('ontrack: remote stream arrived', {
+            audioTracks: ev.streams[0] && ev.streams[0].getAudioTracks().length,
+            videoTracks: ev.streams[0] && ev.streams[0].getVideoTracks().length
+          });
+          remote.srcObject = ev.streams[0];
+          remote.muted = false;
+          remote.play().then(()=> {
+            dbg('remote video.play() succeeded');
+            bigBtn.style.display = 'none';
+            setTimeout(()=> updateStatus(''), 600);
+            document.body.classList.add('session-started');
+          }).catch(err=> {
+            dbg('remote play() failed', err && err.message);
+            bigBtn.style.display = 'none';
+            if ((ev.streams[0].getVideoTracks().length || 0) === 0) {
+              updateStatus('Connected: audio received but no video was sent by host.');
+            } else {
+              updateStatus('Connected but playback failed: ' + (err && err.message));
+            }
+          });
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        dbg('sending SDP offer to host');
+        dc.send({ type:'offer', sdp: pc.localDescription });
+      }
+
+      function cleanup(){
+        try { pc && pc.close(); } catch(e){}
+        pc = null;
+        try { dc && dc.close(); } catch(e){}
+        dc = null;
+        try { peer && peer.destroy(); } catch(e){}
+        peer = null;
+      }
 
       bigBtn.addEventListener('click', async ()=>{
         bigBtn.disabled = true;
@@ -173,17 +179,16 @@
           const micStream = await getMic();
           localMic = micStream;
           updateStatus('Microphone granted. Creating connection to host...');
-          setupPeerAndCall(localMic);
+          setupPeerAndConnect(localMic);
         } catch (err){
           updateStatus('Microphone permission required. ' + (err && err.message));
           bigBtn.disabled = false;
         }
       });
 
-      // cleanup on unload
       window.addEventListener('beforeunload', ()=>{
-        try { call && call.close(); } catch(e){}
-        try { peer && peer.destroy(); } catch(e){}
+        try { dc && dc.send && dc.send({type:'hangup'}); } catch(e){}
+        cleanup();
         try { localMic && localMic.getTracks().forEach(t=>t.stop()); } catch(e){}
       });
 

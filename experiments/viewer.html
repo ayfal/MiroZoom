@@ -1,264 +1,167 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Viewer - Shared Screen</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Viewer — Study Room</title>
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <style>
-    html,body{height:100%;margin:0;background:#000;overflow:hidden}
-    #overlay{position:fixed;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;z-index:20}
-    #waiting{background:rgba(0,0,0,0.7);color:#fff;padding:20px 28px;border-radius:8px;font-size:28px;font-weight:700}
-    #connectBtn {
-      background:#fff; color:#000; border:0; padding:22px 36px; font-size:30px; font-weight:800;
-      border-radius:12px; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,0.6);
+    html,body { height:100%; margin:0; background:#000; color:#fff; touch-action:none; overflow:hidden; }
+    #startBtn {
+      position:fixed; left:50%; transform:translateX(-50%); bottom:6vh;
+      font-size:44px; padding:28px 40px; border-radius:14px; background:#ff0; color:#000; border:4px solid #000;
+      z-index:30; min-width:360px; text-align:center;
     }
-    #connectBtn[disabled]{opacity:.5;cursor:default}
-    video{
-      position:fixed;left:0;top:0;width:100%;height:100%;object-fit:contain;
-      touch-action: none; transform-origin: 0 0;
-      -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color: transparent;
+    #phase {
+      position:fixed; left:50%; transform:translateX(-50%); top:6vh; font-size:28px; background:#111; padding:12px 18px; border-radius:10px; z-index:30;
+      max-width:95%; text-align:center;
     }
-    #micHint { position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,0.6);color:#fff;padding:8px 12px;border-radius:8px;font-size:16px }
+    #remoteVideo {
+      width:100%; height:100%; object-fit:contain; background:#000; touch-action:none;
+      transform-origin: center center;
+    }
   </style>
 </head>
 <body>
-  <div id="overlay">
-    <button id="connectBtn">Connect</button>
-  </div>
+  <button id="startBtn" aria-label="Connect">Connect</button>
+  <div id="phase" class="" role="status" aria-live="assertive">Ready. Press Connect.</div>
+  <video id="remoteVideo" autoplay playsinline></video>
 
-  <video id="screenVideo" autoplay playsinline></video>
-  <div id="micHint">Tap Connect to enable microphone</div>
-
-  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-    // viewer debug helper
-    window.viewerDebugLogs = window.viewerDebugLogs || [];
-    function vdbg(...args) {
-      try {
-        const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-        console.log('[VIEWER DEBUG]', msg);
-        window.viewerDebugLogs.push(`[${new Date().toISOString()}] ${msg}`);
-        if (window.viewerDebugLogs.length > 500) window.viewerDebugLogs.shift();
-      } catch (e) { console.log('[VIEWER DEBUG] (log error)', e); }
-    }
-    window.getViewerDebugLogs = () => (window.viewerDebugLogs || []).slice();
+    // Viewer logic
+    (function(){
+      const ROOM_ID = 'unique-studyroom-for-host-and-visually-impaired';
+      const ICE_SERVERS = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+      ];
 
-    const HOST_ID = 'unique-studyroom-for-host-and-visually-impaired';
-    const video = document.getElementById('screenVideo');
-    const overlay = document.getElementById('overlay');
-    const connectBtn = document.getElementById('connectBtn');
-    const micHint = document.getElementById('micHint');
+      const viewerLogs = [];
+      function log(...args){ const t=new Date().toISOString()+' VIEWER:'; viewerLogs.push(t+' '+args.map(String).join(' ')); console.log(t, ...args); }
+      window.getViewerDebugLogs = () => viewerLogs.join('\n');
 
-    // allow autoplay by muting initially
-    video.muted = true;
-    vdbg('video element muted to allow autoplay');
+      const startBtn = document.getElementById('startBtn');
+      const phaseEl = document.getElementById('phase');
+      const remoteVideo = document.getElementById('remoteVideo');
 
-    vdbg('Initializing viewer script', { HOST_ID });
+      let peer = null;
+      let localStream = null;
+      let currentCall = null;
 
-    const peer = new Peer({
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ]
-      }
-    });
-
-    vdbg('Peer object created, waiting for open');
-
-    let dataConn = null;
-    let currentCall = null;
-    let micCall = null;
-    let localMicStream = null;
-    let micEnabled = false;
-    let signalingOpen = false;
-
-    function showOverlayContent(node) {
-      overlay.innerHTML = '';
-      overlay.appendChild(node);
-      overlay.style.display = 'flex';
-    }
-    function hideOverlay() { overlay.style.display = 'none'; }
-
-    // initial overlay contains connectBtn already
-    vdbg('initial overlay ready');
-
-    peer.on('open', id => {
-      vdbg('peer.on(open)', id);
-      signalingOpen = true;
-      vdbg('signaling ready');
-      // do not auto-connect to host; wait for user pressing Connect
-    });
-
-    peer.on('call', call => {
-      vdbg('peer.on(call) from', call.peer);
-      showOverlayContent(document.createElement('div'));
-      overlay.firstChild.textContent = 'Incoming call';
-      try {
-        currentCall = call;
-        call.on('close', () => { vdbg('incoming call closed'); showOverlayContent(createConnectButton()); });
-        call.on('error', err => { vdbg('incoming call error', err); showOverlayContent(createConnectButton()); });
-        call.answer(); // answer with no local stream (viewer only receives screen)
-        vdbg('call.answer() sent');
-        call.on('stream', stream => {
-          vdbg('call.on(stream) received', { tracks: stream.getTracks().map(t => t.kind + ':' + t.id) });
-          video.srcObject = stream;
-          video.play().then(() => {
-            vdbg('video.play() succeeded');
-            setTimeout(hideOverlay, 300);
-            // confirm to host
-            if (dataConn && dataConn.open) {
-              try { dataConn.send('viewing'); vdbg('sent viewing confirmation to host'); } catch(e){ vdbg('failed send viewing', e); }
-            }
-          }).catch(err => {
-            vdbg('video.play() failed or blocked', err);
-            setTimeout(hideOverlay, 300);
-            if (dataConn && dataConn.open) {
-              try { dataConn.send('viewing'); vdbg('sent viewing confirmation to host'); } catch(e){ vdbg('failed send viewing', e); }
-            }
-          });
-        });
-      } catch(e) {
-        vdbg('Call handling error', e);
-        console.error('Call handling error', e);
-      }
-    });
-
-    function createConnectButton() {
-      const btn = document.createElement('button');
-      btn.id = 'connectBtn';
-      btn.textContent = 'Connect';
-      btn.style.cssText = 'background:#fff;color:#000;border:0;padding:22px 36px;font-size:30px;font-weight:800;border-radius:12px;cursor:pointer;';
-      btn.addEventListener('click', onConnectClick, { once: true });
-      return btn;
-    }
-
-    async function onConnectClick() {
-      vdbg('Connect clicked (user gesture)');
-      connectBtn.disabled = true;
-      connectBtn.textContent = 'Connecting...';
-      micHint.textContent = 'Enabling microphone...';
-
-      // ensure signaling is open
-      if (!signalingOpen) {
-        vdbg('signaling not ready yet; waiting for peer open');
-        const waitOpen = new Promise(resolve => {
-          peer.on('open', () => resolve());
-          setTimeout(resolve, 5000);
-        });
-        await waitOpen;
+      function setPhase(text, verbose=false){
+        phaseEl.textContent = text;
+        if (verbose) log('PHASE:', text);
       }
 
-      // create data connection to host
-      try {
-        dataConn = peer.connect(HOST_ID);
-        vdbg('dataConn created to', HOST_ID);
-        dataConn.on('open', () => {
-          vdbg('dataConn open with', dataConn.peer);
-          micHint.textContent = 'Connected to host (signaling)';
-          // listen for host end
-          dataConn.on('data', d => { vdbg('dataConn received', d); if (d === 'end') stopReceiving(); });
-        });
-        dataConn.on('error', err => { vdbg('dataConn error', err); micHint.textContent = 'Connection error'; });
-        dataConn.on('close', () => { vdbg('dataConn closed'); dataConn = null; micHint.textContent = 'Disconnected'; });
-      } catch (e) {
-        vdbg('dataConn setup failed', e);
-        micHint.textContent = 'Connect failed';
-      }
-
-      // enable mic and call host with mic-only stream
-      try {
-        localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        vdbg('getUserMedia(mic) success', { tracks: localMicStream.getAudioTracks().map(t=>t.id) });
-        micEnabled = true;
-        micHint.textContent = 'Microphone enabled';
+      async function startViewer(){
+        startBtn.classList.add('hidden');
+        setPhase('Requesting microphone permission...');
         try {
-          micCall = peer.call(HOST_ID, localMicStream);
-          vdbg('Outgoing mic call created to host');
-          micCall.on('close', () => { vdbg('micCall closed'); micCall = null; micEnabled = false; micHint.textContent = 'Tap Connect to enable microphone'; showOverlayContent(createConnectButton()); });
-          micCall.on('error', err => { vdbg('micCall error', err); micCall = null; micEnabled = false; micHint.textContent = 'Mic call error'; showOverlayContent(createConnectButton()); });
-        } catch(e) {
-          vdbg('mic call failed', e);
-          micHint.textContent = 'Mic call failed';
+          localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+          setPhase('Microphone obtained. Initializing Peer and calling host...', true);
+          peer = new Peer({ config: { iceServers: ICE_SERVERS } });
+          peer.on('open', id => {
+            log('Viewer peer open', id);
+            setPhase('Calling host: ' + ROOM_ID, true);
+            currentCall = peer.call(ROOM_ID, localStream);
+            attachCallHandlers(currentCall);
+          });
+          peer.on('error', err => {
+            log('Peer error', err);
+            setPhase('Signaling error: ' + (err && err.message), true);
+            // show connect button again so user can retry
+            startBtn.classList.remove('hidden');
+          });
+        } catch(err){
+          log('Media error', err);
+          setPhase('Microphone permission denied or error: ' + (err && err.message), true);
+          startBtn.classList.remove('hidden');
         }
-      } catch (e) {
-        vdbg('getUserMedia(mic) failed or denied', e && e.message ? e.message : e);
-        micHint.textContent = 'Mic denied';
-        // still keep dataConn open so viewer can receive screen only
       }
 
-      // replace overlay with small status then hide after short delay
-      connectBtn.textContent = 'Connected';
-      setTimeout(() => { try { hideOverlay(); } catch(e){} }, 500);
-    }
-
-    // show initial center button (replace overlay content if file was updated)
-    overlay.innerHTML = '';
-    overlay.appendChild(createConnectButton());
-
-    function stopReceiving() {
-      vdbg('stopReceiving called');
-      try { if (video.srcObject) { video.srcObject = null; vdbg('cleared video.srcObject'); } } catch(e){ vdbg('error clearing video.srcObject', e); }
-      try { if (currentCall) { currentCall.close(); vdbg('closed currentCall'); } } catch(e){ vdbg('error closing currentCall', e); }
-      currentCall = null;
-      try { peer.destroy(); vdbg('peer.destroy() called'); } catch(e){ vdbg('peer.destroy() failed', e); }
-      overlay.innerHTML = '';
-      overlay.appendChild(createConnectButton());
-      showOverlayContent(overlay.firstChild);
-      micHint.textContent = 'Tap Connect to enable microphone';
-    }
-
-    peer.on('error', err => {
-      vdbg('Peer error', err && err.message ? err.message : err);
-      overlay.innerHTML = '';
-      const errBox = document.createElement('div');
-      errBox.textContent = 'Connection error';
-      errBox.style.cssText = 'background:rgba(0,0,0,0.7);color:#fff;padding:20px 28px;border-radius:8px;font-size:24px;font-weight:700';
-      overlay.appendChild(errBox);
-    });
-
-    // ---- pinch zoom + pan (touch + mouse) handlers unchanged (kept below) ----
-    let scale = 1, lastScale = 1;
-    let pos = {x:0,y:0}, lastPos = {x:0,y:0};
-    let startTouches = [];
-
-    function setTransform() { video.style.transform = `translate(${pos.x}px, ${pos.y}px) scale(${scale})`; }
-
-    video.addEventListener('touchstart', e => {
-      if (e.touches.length === 1) { startTouches = [{x:e.touches[0].clientX, y:e.touches[0].clientY}]; lastPos = {...pos}; }
-      else if (e.touches.length === 2) { startTouches = [{x:e.touches[0].clientX, y:e.touches[0].clientY},{x:e.touches[1].clientX, y:e.touches[1].clientY}]; lastScale = scale; }
-    }, {passive:true});
-
-    video.addEventListener('touchmove', e => {
-      e.preventDefault();
-      if (e.touches.length === 1 && startTouches.length === 1) {
-        const dx = e.touches[0].clientX - startTouches[0].x;
-        const dy = e.touches[0].clientY - startTouches[0].y;
-        pos.x = lastPos.x + dx; pos.y = lastPos.y + dy; setTransform();
-      } else if (e.touches.length === 2 && startTouches.length === 2) {
-        const curDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        const startDist = Math.hypot(startTouches[0].x - startTouches[1].x, startTouches[0].y - startTouches[1].y);
-        if (startDist > 0) { scale = Math.max(0.5, Math.min(5, lastScale * (curDist / startDist))); setTransform(); }
+      function attachCallHandlers(call){
+        if (!call) return;
+        call.on('stream', remoteStream => {
+          log('Received remote stream (screen)');
+          // attach to full-window video
+          remoteVideo.srcObject = remoteStream;
+          // hide phase and start button once we have remote content
+          phaseEl.classList.add('hidden');
+          startBtn.classList.add('hidden');
+        });
+        call.on('close', () => {
+          log('Call closed by host');
+          setPhase('Host disconnected', true);
+          // show connect button again
+          startBtn.classList.remove('hidden');
+        });
+        call.on('error', e => {
+          log('Call error', e);
+          setPhase('Connection error: ' + (e && e.message), true);
+          startBtn.classList.remove('hidden');
+        });
       }
-    }, {passive:false});
 
-    video.addEventListener('touchend', e => { if (e.touches.length === 0) { startTouches = []; lastScale = scale; lastPos = {...pos}; } });
+      // Touch/pinch pan/zoom for remoteVideo (no visible UI)
+      (function addTouchPanZoom(){
+        let scale = 1, lastScale = 1;
+        let pos = { x:0, y:0 }, lastPos = { x:0, y:0 };
+        let pointers = [];
+        function setTransform(){ remoteVideo.style.transform = `translate(${pos.x}px, ${pos.y}px) scale(${scale})`; }
+        function midpoint(p1,p2){ return {x:(p1.clientX+p2.clientX)/2, y:(p1.clientY+p2.clientY)/2}; }
+        remoteVideo.addEventListener('pointerdown', e => {
+          pointers.push(e);
+          remoteVideo.setPointerCapture(e.pointerId);
+        });
+        remoteVideo.addEventListener('pointermove', e => {
+          for(let i=0;i<pointers.length;i++) if(pointers[i].pointerId===e.pointerId) pointers[i]=e;
+          if (pointers.length===1){
+            const dx = e.movementX || (e.clientX - (lastPos.x || e.clientX));
+            const dy = e.movementY || (e.clientY - (lastPos.y || e.clientY));
+            pos.x += dx;
+            pos.y += dy;
+            lastPos.x = e.clientX;
+            lastPos.y = e.clientY;
+            setTransform();
+          } else if (pointers.length>=2){
+            const p1 = pointers[0], p2 = pointers[1];
+            const d = Math.hypot(p1.clientX - p2.clientX, p1.clientY - p2.clientY);
+            if (!lastScale) lastScale = d;
+            const factor = d / lastScale;
+            scale *= factor;
+            // clamp scale
+            scale = Math.max(1, Math.min(4, scale));
+            lastScale = d;
+            setTransform();
+          }
+        });
+        function endPointer(e){
+          pointers = pointers.filter(p => p.pointerId !== e.pointerId);
+          if (pointers.length===0){
+            lastScale = 1;
+            lastPos = {x:0,y:0};
+          }
+        }
+        remoteVideo.addEventListener('pointerup', endPointer);
+        remoteVideo.addEventListener('pointercancel', endPointer);
+        remoteVideo.addEventListener('pointerout', endPointer);
+        remoteVideo.addEventListener('pointerleave', endPointer);
+        // double-tap to reset
+        let lastTap=0;
+        remoteVideo.addEventListener('click', e => {
+          const now = Date.now();
+          if (now - lastTap < 300){
+            scale = 1; pos={x:0,y:0}; setTransform();
+          }
+          lastTap = now;
+        });
+      })();
 
-    let dragging = false; let dragStart = {x:0,y:0};
-    video.addEventListener('mousedown', e => { dragging = true; dragStart = {x:e.clientX, y:e.clientY}; lastPos = {...pos}; });
-    window.addEventListener('mousemove', e => { if (!dragging) return; pos.x = lastPos.x + (e.clientX - dragStart.x); pos.y = lastPos.y + (e.clientY - dragStart.y); setTransform(); });
-    window.addEventListener('mouseup', () => { dragging = false; lastPos = {...pos}; });
-
-    video.addEventListener('wheel', e => {
-      e.preventDefault();
-      const delta = -e.deltaY; const factor = delta > 0 ? 1.08 : 0.92; const newScale = Math.max(0.5, Math.min(5, scale * factor));
-      const rect = video.getBoundingClientRect(); const cx = e.clientX - rect.left; const cy = e.clientY - rect.top; const prevScale = scale;
-      scale = newScale; pos.x = cx - (cx - pos.x) * (scale / prevScale); pos.y = cy - (cy - pos.y) * (scale / prevScale); setTransform();
-    }, {passive:false});
+      startBtn.addEventListener('click', startViewer);
+      log('Viewer page ready');
+    })();
   </script>
 </body>
 </html>

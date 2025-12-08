@@ -1,306 +1,240 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Host - Studyroom</title>
+  <title>Host — Study Room</title>
+  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <style>
-    html,body{height:100%;margin:0;background:#000;display:flex;flex-direction:column;color:#fff}
-    #videoFrame{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
-    video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain}
-    .controls{height:72px;display:flex;align-items:center;gap:12px;padding:12px;background:#111}
-    button{flex:0 0 auto;padding:8px 14px;font-size:16px;border-radius:6px;border:0;background:#222;color:#fff}
-    #status {margin-left:8px;font-weight:600}
-    #waitingBadge {position:absolute;left:12px;top:12px;background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:6px;font-size:18px;display:none}
-    #centerStatus {
-      position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
-      z-index:20; background:rgba(0,0,0,0.7); color:#fff; padding:18px 28px;
-      border-radius:10px; font-size:22px; font-weight:700; text-align:center;
-      pointer-events:none;
+    :root{
+      --bg:#000;
+      --fg:#fff;
+      --accent:#ff0;
+      --accent-contrast:#000;
     }
+    html,body { height:100%; margin:0; background:var(--bg); color:var(--fg); font-family:Arial,Helvetica,sans-serif; }
+    .center {
+      display:flex; align-items:center; justify-content:center; height:100%;
+      flex-direction:column; gap:16px; padding:20px; box-sizing:border-box;
+    }
+    .big-button {
+      font-size:36px; padding:24px 36px; border-radius:12px; border:4px solid var(--accent-contrast);
+      background:var(--accent); color:var(--accent-contrast); cursor:pointer; min-width:320px; text-align:center;
+      box-shadow:0 6px 0 rgba(0,0,0,0.4);
+    }
+    #phase { font-size:28px; text-align:center; padding:12px; border-radius:8px; background:#111; color:#fff; max-width:min(900px,95%); }
+    #hostPreview { width:640px; max-width:95%; border:4px solid #222; border-radius:8px; background:#000; }
+    .controls { display:flex; gap:12px; align-items:center; }
+    .control-btn { font-size:20px; padding:10px 18px; border-radius:8px; cursor:pointer; }
+    .hidden { display:none !important; }
+    footer { position:fixed; left:8px; bottom:8px; color:#888; font-size:12px; }
   </style>
 </head>
 <body>
-  <div id="videoFrame">
-    <div id="waitingBadge">Not sharing</div>
-    <video id="previewVideo" autoplay playsinline muted></video>
+  <div class="center" id="root">
+    <button id="startBtn" class="big-button" aria-label="Start session">Start Session</button>
+    <div id="phase" class="hidden" role="status" aria-live="assertive"></div>
+
+    <video id="hostPreview" autoplay muted playsinline class="hidden"></video>
+    <div id="hostControls" class="controls hidden" aria-hidden="false">
+      <button id="muteBtn" class="control-btn">Mute Mic</button>
+      <button id="endBtn" class="control-btn">End Session</button>
+    </div>
   </div>
 
-  <div id="centerStatus">Idle</div>
+  <footer>Host page — room id: unique-studyroom-for-host-and-visually-impaired</footer>
 
-  <div class="controls">
-    <button id="muteBtn">Mute</button>
-    <button id="startBtn">Start Sharing</button>
-    <div id="status">Idle</div>
-  </div>
-
-  <audio id="remoteAudio" autoplay playsinline></audio>
-
-  <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <script>
-    const HOST_ID = 'unique-studyroom-for-host-and-visually-impaired';
+    // Host logic
+    (function(){
+      const ROOM_ID = 'unique-studyroom-for-host-and-visually-impaired';
+      const ICE_SERVERS = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+        { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+      ];
 
-    // host debug helper + getter
-    window.debugLogs = window.debugLogs || [];
-    function dbg(...args) {
-      try {
-        const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-        console.log('[HOST DEBUG]', msg);
-        window.debugLogs.push(`[${new Date().toISOString()}] ${msg}`);
-        if (window.debugLogs.length > 1000) window.debugLogs.shift();
-      } catch (e) { console.log('[HOST DEBUG] (log error)', e); }
-    }
-    window.getHostDebugLogs = () => (window.debugLogs || []).slice();
+      // Debug logs
+      const hostLogs = [];
+      function log(...args){ const t = new Date().toISOString() + ' HOST:'; hostLogs.push(t + ' ' + args.map(String).join(' ')); console.log(t, ...args); }
+      window.getHostDebugLogs = () => hostLogs.join('\n');
 
-    dbg('Initializing host script', { HOST_ID });
+      const startBtn = document.getElementById('startBtn');
+      const phaseEl = document.getElementById('phase');
+      const hostPreview = document.getElementById('hostPreview');
+      const hostControls = document.getElementById('hostControls');
+      const muteBtn = document.getElementById('muteBtn');
+      const endBtn = document.getElementById('endBtn');
 
-    const peer = new Peer(HOST_ID, {
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ]
+      let peer = null;
+      let localStream = null;
+      let viewerCall = null;
+      let viewerAudioEl = null;
+      let micEnabled = true;
+      let running = false;
+
+      function setPhase(text, verbose=false){
+        phaseEl.textContent = text;
+        phaseEl.classList.remove('hidden');
+        if (verbose) log('PHASE:', text);
       }
-    });
+      function clearPhase(){
+        phaseEl.classList.add('hidden');
+      }
 
-    dbg('Peer object created, waiting for open event');
+      async function startSession(){
+        if (running) return;
+        running = true;
+        startBtn.classList.add('hidden');
 
-    const previewVideo = document.getElementById('previewVideo');
-    const muteBtn = document.getElementById('muteBtn');
-    const startBtn = document.getElementById('startBtn');
-    const statusEl = document.getElementById('status');
-    const waitingBadge = document.getElementById('waitingBadge');
-    const centerStatus = document.getElementById('centerStatus');
-    const remoteAudio = document.getElementById('remoteAudio');
-
-    let localStream = null;      // screen + host mic
-    let dataConn = null;
-    let currentCall = null;      // outgoing to viewer (screen)
-    let incomingMicCall = null;  // incoming call from viewer (viewer mic)
-    let audioMuted = false;
-
-    let shareStarted = false;
-    let viewerConfirmed = false;
-
-    function setStatus(text) {
-      statusEl.textContent = text;
-      centerStatus.textContent = text;
-      waitingBadge.style.display = text && text.toLowerCase().includes('waiting') ? 'block' : 'none';
-      dbg('UI status ->', text);
-    }
-
-    async function startShare() {
-      dbg('startShare() called (user-gesture)');
-      setStatus('Starting share...');
-      try {
-        // screen (may include system audio)
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        dbg('getDisplayMedia success', { tracks: screenStream.getTracks().map(t => t.kind + ':' + t.id) });
-
-        // capture host mic in same gesture and append to stream
-        let micStream = null;
+        setPhase('Requesting screen + microphone permissions...');
         try {
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          dbg('getUserMedia(mic) success', { tracks: micStream.getTracks().map(t => t.kind + ':' + t.id) });
-        } catch (e) {
-          dbg('getUserMedia(mic) failed or denied', e && e.message ? e.message : e);
+          const screenStream = await navigator.mediaDevices.getDisplayMedia({ video:true, preferCurrentTab:true });
+          const micStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+          // combine both into one stream
+          localStream = new MediaStream([...screenStream.getVideoTracks(), ...micStream.getAudioTracks()]);
+          hostPreview.srcObject = localStream;
+          hostPreview.classList.remove('hidden');
+          hostControls.classList.remove('hidden');
+          setPhase('Permissions granted. Initializing peer (attempting to claim room id)...', true);
+          await initPeerWithRetry();
+        } catch (err){
+          setPhase('Permission denied or error obtaining media: ' + (err && err.message), true);
+          log('Media error', err);
+          startBtn.classList.remove('hidden');
+          running = false;
         }
-
-        // combine: use a new MediaStream, add screen video + all audio tracks (screen + mic)
-        localStream = new MediaStream();
-        // add video tracks from screen
-        screenStream.getVideoTracks().forEach(t => localStream.addTrack(t));
-        // add screen audio tracks first
-        screenStream.getAudioTracks().forEach(t => localStream.addTrack(t));
-        // add mic tracks (if any)
-        if (micStream) micStream.getAudioTracks().forEach(t => localStream.addTrack(t));
-
-      } catch (e) {
-        dbg('Screen share denied or failed', e && e.message ? e.message : e);
-        shareStarted = false;
-        setStatus('Share failed');
-        return;
       }
 
-      // Do NOT show preview until viewer confirms viewing
-      shareStarted = true;
-      viewerConfirmed = false;
-      setStatus('Waiting for viewer');
-
-      // call viewer if connected
-      if (dataConn && dataConn.open) {
-        dbg('dataConn open; placing call to', dataConn.peer);
-        setStatus('Calling viewer');
-        makeCallTo(dataConn.peer);
-      } else {
-        dbg('no viewer connected yet; will call when viewer connects');
-      }
-    }
-
-    function makeCallTo(peerId) {
-      dbg('makeCallTo()', peerId);
-      try {
-        if (!localStream) { dbg('no localStream available when trying to call'); return; }
-        if (currentCall) {
-          dbg('Closing existing call before making new one', { callPeer: currentCall.peer });
-          currentCall.close();
-        }
-        currentCall = peer.call(peerId, localStream);
-        dbg('Outgoing call created', { callPeer: peerId });
-        setStatus('Calling viewer');
-        currentCall.on('close', () => {
-          dbg('currentCall closed');
-          currentCall = null;
-          setStatus('Waiting for viewer');
-          viewerConfirmed = false;
-          previewVideo.srcObject = null;
-        });
-        currentCall.on('error', err => {
-          dbg('currentCall error', err);
-          currentCall = null;
-          setStatus('Call error');
-        });
-      } catch (e) {
-        dbg('Call error', e && e.message ? e.message : e);
-      }
-    }
-
-    // accept incoming data connections from viewer(s)
-    peer.on('connection', conn => {
-      dbg('peer.on(connection) from', conn.peer);
-      dataConn = conn;
-      setStatus('Viewer connected (data)');
-      conn.on('open', () => {
-        dbg('dataConn open with', conn.peer);
-        setStatus('Viewer connected');
-        // if we already have a stream, call viewer
-        if (localStream) {
-          makeCallTo(conn.peer);
-        }
-        conn.on('data', d => {
-          dbg('dataConn received', d);
-          if (d === 'end') {
-            dbg('received end command from viewer');
-            cleanupAndClose();
-          } else if (d === 'viewing') {
-            dbg('viewer confirmed viewing');
-            viewerConfirmed = true;
-            // show preview to host only after viewer confirms
+      function initPeerWithRetry(){
+        return new Promise((resolve, reject) => {
+          let attempt=0;
+          let created = false;
+          function tryCreate(){
+            attempt++;
+            setPhase(`Creating Peer (attempt ${attempt})...`, true);
+            log('Attempting to create Peer with id', ROOM_ID, 'attempt', attempt);
             try {
-              previewVideo.srcObject = localStream;
-              previewVideo.play().catch(err => dbg('previewVideo.play() failed', err));
-            } catch(e) { dbg('failed setting preview', e); }
-            setStatus('Streaming to viewer');
+              peer = new Peer(ROOM_ID, { config: { iceServers: ICE_SERVERS } });
+            } catch(err){
+              log('Peer constructor error', err);
+              setPhase('Peer initialization error: ' + (err && err.message), true);
+              setTimeout(tryCreate, 2000 + Math.random()*2000);
+              return;
+            }
+
+            peer.on('open', id => {
+              created = true;
+              setPhase('Room opened as host: ' + id, true);
+              log('Peer open', id);
+              resolve();
+            });
+
+            peer.on('error', err => {
+              log('Peer error', err);
+              // PeerJS reports id in use with type 'unavailable-id' or message contains 'taken'
+              const msg = (err && (err.type || err.message || '')).toString().toLowerCase();
+              if (!created && (msg.includes('unavailable-id') || msg.includes('taken') || msg.includes('id') && msg.includes('registered'))) {
+                setPhase('Room id already taken. Retrying in a moment...', true);
+                peer.destroy && peer.destroy();
+                peer = null;
+                setTimeout(tryCreate, 1500 + Math.random()*2000);
+                return;
+              }
+              setPhase('Peer error: ' + (err && err.message), true);
+            });
+
+            peer.on('call', incomingCall => {
+              log('Incoming call from', incomingCall.peer);
+              setPhase('Incoming connection from viewer: ' + incomingCall.peer, true);
+              // answer with local media (screen + mic)
+              incomingCall.answer(localStream);
+              viewerCall = incomingCall;
+
+              incomingCall.on('stream', remoteStream => {
+                log('Received remote stream (viewer audio?)');
+                // attach viewer audio playback for host to hear their mic
+                if (!viewerAudioEl){
+                  viewerAudioEl = document.createElement('audio');
+                  viewerAudioEl.autoplay = true;
+                  viewerAudioEl.controls = false;
+                  viewerAudioEl.style.display = 'none';
+                  document.body.appendChild(viewerAudioEl);
+                }
+                viewerAudioEl.srcObject = remoteStream;
+                setPhase('Viewer connected. Exchanging media...', true);
+
+                // Final established: remove phase messages after small timeout to indicate connected
+                setTimeout(() => {
+                  clearPhase();
+                }, 1000);
+              });
+
+              incomingCall.on('close', () => {
+                log('Viewer call closed');
+                setPhase('Viewer disconnected', true);
+              });
+
+              incomingCall.on('error', e => {
+                log('Viewer call error', e);
+                setPhase('Connection error: ' + (e && e.message), true);
+              });
+            });
+
+            peer.on('disconnected', () => {
+              log('Peer disconnected event');
+              setPhase('Signaling disconnected. Attempting reconnect...', true);
+            });
+
+            peer.on('close', () => {
+              log('Peer closed');
+              setPhase('Peer closed', true);
+            });
           }
-        });
-      });
-      conn.on('close', () => {
-        dbg('dataConn closed for', conn.peer);
-        dataConn = null;
-        setStatus('Viewer disconnected');
-        viewerConfirmed = false;
-        previewVideo.srcObject = null;
-      });
-      conn.on('error', err => {
-        dbg('dataConn error', err);
-        dataConn = null;
-        setStatus('Data error');
-      });
-    });
 
-    // accept incoming calls (viewer may call with mic-only stream)
-    peer.on('call', call => {
-      dbg('peer.on(call) incoming from', call.peer);
-      try {
-        // answer without sending anything (we receive their mic)
-        call.answer();
-        incomingMicCall = call;
-        call.on('stream', stream => {
-          dbg('received incoming mic stream', { tracks: stream.getTracks().map(t => t.kind + ':' + t.id) });
-          // play incoming mic via audio element
-          try {
-            remoteAudio.srcObject = stream;
-            remoteAudio.muted = false; // host user already performed gesture, allowed to play audio
-            remoteAudio.play().catch(err => dbg('remoteAudio.play() failed', err));
-            setStatus('Receiving viewer mic');
-          } catch(e) {
-            dbg('failed to attach remote audio', e);
+          tryCreate();
+        });
+      }
+
+      muteBtn.addEventListener('click', () => {
+        if (!localStream) return;
+        micEnabled = !micEnabled;
+        localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+        muteBtn.textContent = micEnabled ? 'Mute Mic' : 'Unmute Mic';
+        log('Mic toggled. Now enabled=', micEnabled);
+      });
+
+      endBtn.addEventListener('click', () => {
+        log('End session clicked by host');
+        cleanupAndEnd('Host ended session');
+      });
+
+      function cleanupAndEnd(reason){
+        setPhase('Ending session: ' + reason, true);
+        try {
+          if (viewerCall) viewerCall.close();
+          if (peer) peer.destroy();
+          if (localStream) {
+            localStream.getTracks().forEach(t => t.stop());
+            localStream = null;
           }
-        });
-        call.on('close', () => { dbg('incomingMicCall closed'); incomingMicCall = null; setStatus('Viewer mic disconnected'); });
-        call.on('error', err => { dbg('incomingMicCall error', err); incomingMicCall = null; setStatus('Mic call error'); });
-      } catch (e) {
-        dbg('error answering incoming call', e);
+        } catch(e){ log('Error during cleanup', e); }
+        // show a message and show start button to allow restart
+        startBtn.classList.remove('hidden');
+        hostPreview.classList.add('hidden');
+        hostControls.classList.add('hidden');
+        running = false;
       }
-    });
 
-    peer.on('open', id => {
-      dbg('peer.on(open)', id);
-      setStatus('Peer ready');
-    });
-
-    peer.on('disconnected', () => { dbg('peer disconnected'); setStatus('Disconnected'); });
-    peer.on('close', () => { dbg('peer closed'); setStatus('Closed'); });
-
-    // Start/End button behavior
-    startBtn.addEventListener('click', async () => {
-      if (!shareStarted) {
-        dbg('Start button clicked -> starting share');
-        await startShare();
-        startBtn.textContent = 'End Session';
-      } else {
-        dbg('End button clicked -> sending end and cleaning up');
-        try { if (dataConn && dataConn.open) { dataConn.send('end'); dbg('sent end to viewer'); } } catch(e){ dbg('failed sending end', e); }
-        cleanupAndClose();
-        startBtn.textContent = 'Start Sharing';
-      }
-    });
-
-    // mute/unmute (controls outgoing audio track playback from remote viewer and host mic visibility)
-    muteBtn.addEventListener('click', () => {
-      audioMuted = !audioMuted;
-      // mute host's preview audio (preview is already muted), but also mute remoteAudio
-      remoteAudio.muted = audioMuted;
-      muteBtn.textContent = audioMuted ? 'Unmute' : 'Mute';
-      dbg('muteBtn toggled', { audioMuted });
-    });
-
-    function cleanupUI() {
-      dbg('cleanupUI called');
-      previewVideo.srcObject = null;
-      remoteAudio.srcObject = null;
-      if (localStream) {
-        localStream.getTracks().forEach(t => { try { t.stop(); dbg('stopped track', t.kind, t.id); } catch(e){} });
-        localStream = null;
-      }
-      if (currentCall) { try { currentCall.close(); dbg('closed currentCall'); } catch(e){} currentCall = null; }
-      if (incomingMicCall) { try { incomingMicCall.close(); dbg('closed incomingMicCall'); } catch(e){} incomingMicCall = null; }
-      if (dataConn) { try { dataConn.close(); dbg('closed dataConn'); } catch(e){} dataConn = null; }
-      muteBtn.textContent = 'Mute';
-      shareStarted = false;
-      viewerConfirmed = false;
-      setStatus('Idle');
-      startBtn.textContent = 'Start Sharing';
-    }
-
-    function cleanupAndClose() {
-      dbg('cleanupAndClose called');
-      try { peer.destroy(); dbg('peer.destroy() called'); } catch(e){ dbg('peer.destroy() failed', e); }
-      cleanupUI();
-      document.body.innerHTML = '<div style="color:#fff;padding:20px;background:#000">Session ended.</div>';
-      dbg('UI replaced with session ended message');
-    }
-
-    peer.on('error', err => {
-      dbg('Peer error', err && err.message ? err.message : err);
-      setStatus('Peer error');
-    });
-
-    dbg('host script loaded and ready');
+      // expose for console convenience
+      window._hostInternal = { ROOM_ID, ICE_SERVERS, log };
+      startBtn.addEventListener('click', startSession);
+      // initial accessible message
+      phaseEl.textContent = 'Ready. Press Start Session to begin.';
+      phaseEl.classList.remove('hidden');
+      log('Host page ready');
+    })();
   </script>
 </body>
 </html>

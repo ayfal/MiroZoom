@@ -182,55 +182,78 @@
          dbg('creating RTCPeerConnection and adding local tracks');
          pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-         // Ensure we signal that we want to receive video from host
-         dbg('adding recvonly video transceiver to request remote screen');
-         pc.addTransceiver('video', { direction: 'recvonly' });
+       // buffer local ICE candidates until we've set localDescription (offer)
+       pc._localCandidateQueue = [];
 
-         // add mic track(s) for sending back to host
-         localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-        dbg('local tracks added', {audio: localStream.getAudioTracks().length});
+        // Ensure we signal that we want to receive video from host
+        dbg('adding recvonly video transceiver to request remote screen');
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
+        // add mic track(s) for sending back to host
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
         dbg('local tracks added', {audio: localStream.getAudioTracks().length});
         setProgress('Creating offer', 60);
 
-         pc.onicecandidate = (ev) => {
-           if (ev.candidate && dc && dc.open) {
-             dbg('sending ICE candidate to host');
-             dc.send({ type:'candidate', candidate: ev.candidate.toJSON() });
-           }
-         };
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate && dc && dc.open) {
+            dbg('sending ICE candidate to host');
+            dc.send({ type:'candidate', candidate: ev.candidate.toJSON() });
+          }
+        };
+        pc.onicecandidate = (ev) => {
+          // If localDescription isn't set yet, buffer the candidate
+          if (!pc.localDescription || !pc.localDescription.type) {
+            if (ev.candidate) pc._localCandidateQueue.push(ev.candidate.toJSON());
+            return;
+          }
+          if (ev.candidate && dc && dc.open) {
+            dbg('sending ICE candidate to host');
+            dc.send({ type:'candidate', candidate: ev.candidate.toJSON() });
+          }
+        };
 
-         pc.ontrack = (ev) => {
-           dbg('ontrack: remote stream arrived', {
-             audioTracks: ev.streams[0] && ev.streams[0].getAudioTracks().length,
-             videoTracks: ev.streams[0] && ev.streams[0].getVideoTracks().length
-           });
-           remote.srcObject = ev.streams[0];
-           remote.muted = false;
-           remote.play().then(()=> {
-             dbg('remote video.play() succeeded');
-             bigBtn.style.display = 'none';
-             // hide progress UI now that media is playing
-             hideProgress();
-             document.body.classList.add('session-started');
-           }).catch(err=> {
-             dbg('remote play() failed', err && err.message);
-             bigBtn.style.display = 'none';
-             if ((ev.streams[0].getVideoTracks().length || 0) === 0) {
-                setProgress('Connected: audio only', 100);
-              } else {
-                setProgress('Connected but playback failed', 0);
-              }
-           });
-         };
+        pc.ontrack = (ev) => {
+          dbg('ontrack: remote stream arrived', {
+            audioTracks: ev.streams[0] && ev.streams[0].getAudioTracks().length,
+            videoTracks: ev.streams[0] && ev.streams[0].getVideoTracks().length
+          });
+          remote.srcObject = ev.streams[0];
+          remote.muted = false;
+          remote.play().then(()=> {
+            dbg('remote video.play() succeeded');
+            bigBtn.style.display = 'none';
+            // hide progress UI now that media is playing
+            hideProgress();
+            document.body.classList.add('session-started');
+          }).catch(err=> {
+            dbg('remote play() failed', err && err.message);
+            bigBtn.style.display = 'none';
+            if ((ev.streams[0].getVideoTracks().length || 0) === 0) {
+              setProgress('Connected: audio only', 100);
+            } else {
+              setProgress('Connected but playback failed', 0);
+            }
+          });
+        };
 
-         const offer = await pc.createOffer();
-         await pc.setLocalDescription(offer);
-         // wait a short time for ICE candidates to be gathered so remote has usable SDPs
-         await waitForIceGatheringComplete(pc, 6000);
-         dbg('sending SDP offer to host');
-         setProgress('Offer sent — waiting for answer', 70);
-         dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
-       }
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        // wait for a short ICE gather window
+        await waitForIceGatheringComplete(pc, 6000);
+        dbg('sending SDP offer to host');
+        setProgress('Offer sent — waiting for answer', 70);
+        dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
+
+        // flush any buffered local candidates now that the offer is sent / localDescription is set
+        if (pc._localCandidateQueue && pc._localCandidateQueue.length) {
+          for (const c of pc._localCandidateQueue) {
+            try {
+              if (dc && dc.open) dc.send({ type:'candidate', candidate: c });
+            } catch(e){ dbg('failed sending buffered local candidate', e && e.message); }
+          }
+          pc._localCandidateQueue = [];
+        }
+      }
 
       function cleanup(){
         try { pc && pc.close(); } catch(e){}

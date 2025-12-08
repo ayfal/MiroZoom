@@ -188,6 +188,10 @@
       }
 
       function setupDataConnection(dc){
+        // per-connection buffer for candidates that arrive before we create the PC
+        dc._pendingCandidates = [];
+        dc._connectedAt = Date.now();
+
         // If there's already a connected viewer, close previous.
         if (currentDC && currentDC.peer !== dc.peer) {
           dbg('another viewer attempted to connect; closing previous connection');
@@ -208,31 +212,33 @@
           if (!msg || !msg.type) return;
           try {
             if (msg.type === 'offer') {
-              // Create RTCPeerConnection and answer
               dbg('received SDP offer, creating RTCPeerConnection to answer');
-              // guard against rapid duplicate offers
+              // flush any old pendingCandidates attached to this DC once we create PC
               if (currentPC && currentPC._isHandlingOffer) {
                 dbg('duplicate offer ignored while handling previous one');
                 return;
               }
               if (currentPC && currentPC.signalingState !== 'closed') {
-                // if a PC exists and looks active, we still allow a new offer only if it's from a restarted viewer.
                 dbg('closing existing PC before creating new one (new offer received)');
                 try { currentPC.close(); } catch(e){}
                 currentPC = null;
               }
-              // mark handling
-                   if (currentPC) {
-                dbg('closing existing PC before creating new one');
-                try { currentPC.close(); } catch(e){}
-              }
               const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-              pc._isHandlingOffer = true;
               pc._candidateQueue = [];
-              pc._createdAt = Date.now();
               currentPC = pc;
+              // when remote candidates arrive before remoteDescription is set, they'll be queued in pc._candidateQueue
+              // set up onicecandidate to send our candidates as they are gathered (we still buffer on viewer too)
+              pc.onicecandidate = (ev) => {
+                if (ev.candidate) dc.send({type:'candidate', candidate: ev.candidate.toJSON()});
+              };
+              pc.ontrack = (ev) => {
+                dbg('host pc ontrack (viewer audio?)', {tracks: ev.streams[0] && ev.streams[0].getAudioTracks().length});
+                playRemoteAudio(ev.streams[0]);
+                hideProgress();
+                controls.setAttribute('aria-hidden','false');
+              };
 
-              // Add host tracks before setting remote description
+              // add host tracks before apply remote
               if (!hostStream) {
                 dbg('hostStream missing when offer arrived; attempting to reacquire');
                 try {
@@ -247,56 +253,44 @@
               dbg('adding host tracks to pc', {video: hostStream.getVideoTracks().length, audio: hostStream.getAudioTracks().length});
               hostStream.getTracks().forEach(track => pc.addTrack(track, hostStream));
 
-              pc.onicecandidate = (ev) => {
-                if (ev.candidate) {
-                  dbg('sending ICE candidate to viewer');
-                  dc.send({type:'candidate', candidate: ev.candidate.toJSON()});
-                }
-              };
-
-              pc.ontrack = (ev) => {
-                dbg('host pc ontrack (viewer audio?)', {tracks: ev.streams[0] && ev.streams[0].getAudioTracks().length});
-                // play remote audio (viewer mic)
-                playRemoteAudio(ev.streams[0]);
-                // hide the progress UI now that session established
-                hideProgress();
-                controls.setAttribute('aria-hidden','false');
-              };
-
+              // apply remote SDP, then flush DC's pending candidates into the pc (or add directly)
               await pc.setRemoteDescription(msg.sdp);
-              // flush any queued remote candidates that arrived earlier
-              if (pc._candidateQueue && pc._candidateQueue.length) {
-                dbg('flushing queued candidates after setRemoteDescription', pc._candidateQueue.length);
-                for (const c of pc._candidateQueue) {
-                  try { await pc.addIceCandidate(c); } catch(e){ dbg('queued addIceCandidate failed', e && e.message); }
+              if (dc._pendingCandidates && dc._pendingCandidates.length) {
+                dbg('flushing DC pending candidates into pc', dc._pendingCandidates.length);
+                for (const c of dc._pendingCandidates) {
+                  try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e){ dbg('queued addIceCandidate failed', e && e.message); }
                 }
-                pc._candidateQueue = [];
+                dc._pendingCandidates = [];
               }
+
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
-              // wait for ICE candidates to be gathered before sending answer
+              // wait for some ICE candidates to be gathered before sending answer
               await waitForIceGatheringComplete(pc, 6000);
               dbg('sending SDP answer to viewer');
               dc.send({ type:'answer', sdp: pc.localDescription.toJSON() });
               setProgress('Answer sent — establishing media', 80);
-              pc._isHandlingOffer = false;
-                } else if (msg.type === 'candidate') {
-              // queue candidate if remote description not yet applied
-              if (currentPC) {
+            } else if (msg.type === 'candidate') {
+              if (currentPC && msg.candidate) {
+                dbg('adding received candidate to pc');
                 try {
-                  if (!currentPC.remoteDescription || !currentPC.remoteDescription.type) {
-                    dbg('queueing candidate until remoteDescription set');
-                    currentPC._candidateQueue = currentPC._candidateQueue || [];
-                    currentPC._candidateQueue.push(msg.candidate);
-                  } else {
-                    await currentPC.addIceCandidate(new RTCIceCandidate(msg.candidate));
-                    dbg('added received candidate to pc');
-                  }
+                  await currentPC.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                } catch (e){
+                  dbg('addIceCandidate error', e && e.message);
+                }
+              } else dbg('no pc to add candidate to or invalid candidate');
+              // If we don't have a PC yet, buffer this candidate on the DataConnection
+              if (!currentPC) {
+                dbg('no pc yet; buffering candidate on DC');
+                dc._pendingCandidates = dc._pendingCandidates || [];
+                dc._pendingCandidates.push(msg.candidate);
+              } else {
+                try {
+                  await currentPC.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                  dbg('added received candidate to pc');
                 } catch (e) {
                   dbg('addIceCandidate error', e && e.message);
                 }
-              } else {
-                dbg('no pc to add candidate to; candidate ignored/queued by nothing');
               }
             } else if (msg.type === 'hangup') {
               dbg('viewer requested hangup');

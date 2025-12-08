@@ -65,14 +65,28 @@
     let currentCall = null;
     let audioMuted = false;
 
-    // start capturing the host's screen automatically
+    // Coordination flags to honor getDisplayMedia transient activation requirement
+    let peerReady = false;
+    let userGestureSeen = false;
+    let shareStarted = false;
+
+    function tryStartIfReady() {
+      dbg('tryStartIfReady', { peerReady, userGestureSeen, shareStarted });
+      if (!shareStarted && peerReady && userGestureSeen) {
+        shareStarted = true;
+        startShare();
+      }
+    }
+
+    // start capturing the host's screen (must be called from user gesture)
     async function startShare() {
-      dbg('startShare() called');
+      dbg('startShare() called (user gesture allowed)');
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         dbg('getDisplayMedia success', { tracks: localStream.getTracks().map(t => t.kind + ':' + t.id) });
       } catch (e) {
         dbg('Screen share denied or failed', e && e.message ? e.message : e);
+        shareStarted = false;
         return;
       }
 
@@ -133,12 +147,28 @@
 
     peer.on('open', id => {
       dbg('peer.on(open)', id);
-      // automatically request screen capture when host peer is ready
-      startShare();
+      peerReady = true;
+      tryStartIfReady();
     });
 
     peer.on('disconnected', () => dbg('peer disconnected'));
     peer.on('close', () => dbg('peer closed'));
+
+    // Listen for a user gesture (click/touch/keydown) and allow only one activation
+    function onUserGesture(e) {
+      dbg('user gesture detected', e.type);
+      userGestureSeen = true;
+      tryStartIfReady();
+      // remove other handlers (we used {once:true} for safety below but also remove)
+      document.removeEventListener('click', onUserGesture, true);
+      document.removeEventListener('touchstart', onUserGesture, true);
+      document.removeEventListener('keydown', onUserGesture, true);
+    }
+    // add capture-phase handlers so any user interaction starts the flow
+    document.addEventListener('click', onUserGesture, { once: true, capture: true });
+    document.addEventListener('touchstart', onUserGesture, { once: true, capture: true });
+    document.addEventListener('keydown', onUserGesture, { once: true, capture: true });
+    dbg('waiting for user gesture to start sharing (click/touch/keydown)');
 
     // mute/unmute (controls outgoing audio track)
     muteBtn.addEventListener('click', () => {

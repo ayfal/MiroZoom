@@ -77,6 +77,13 @@
     let _disconnectTimer = null;
     const DISCONNECT_DEBOUNCE_MS = 8000; // wait before treating transient disconnect as session end
 
+    // keepalive/datachannel
+    let dc = null;
+    let dcPingInterval = null;
+    let lastPong = 0;
+    const KEEPALIVE_INTERVAL_MS = 5000;
+    const KEEPALIVE_TIMEOUT_MS = 25000; // if no pong within this, treat as lost
+
     const btnEnableMedia = document.getElementById('btnEnableMedia');
     const btnOffer = document.getElementById('btnOffer');
     const viewerLink = document.getElementById('viewerLink');
@@ -115,8 +122,31 @@
       try {
         status.textContent = 'Requesting screen & microphone permission...';
         // create pc now so tracks can be added without further permission prompts later
-        if (!pc) pc = new RTCPeerConnection(getIceConfig());
-
+        if (!pc) {
+          pc = new RTCPeerConnection(getIceConfig());
+          // create keepalive datachannel on the host side
+          try {
+            dc = pc.createDataChannel('peersharing_keepalive');
+            dc.onopen = () => {
+              lastPong = Date.now();
+              dcPingInterval = setInterval(() => {
+                if (dc && dc.readyState === 'open') {
+                  try { dc.send(JSON.stringify({ t: 'ping', ts: Date.now() })); } catch(e){ }
+                }
+              }, KEEPALIVE_INTERVAL_MS);
+            };
+            dc.onmessage = (evt) => {
+              try {
+                const msg = JSON.parse(evt.data || '{}');
+                if (msg.t === 'pong') lastPong = Date.now();
+              } catch(e){}
+            };
+            dc.onclose = () => { if (dcPingInterval) { clearInterval(dcPingInterval); dcPingInterval = null; } };
+          } catch (e) {
+            console.warn('DataChannel not available:', e);
+          }
+        }
+ 
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
@@ -200,12 +230,19 @@
           if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
           showPreviewIfReady();
           status.textContent = 'Session active — preview visible to viewer';
+          lastPong = Date.now();
         }
         function scheduleClearOnTransient() {
           if (_disconnectTimer) return;
           _disconnectTimer = setTimeout(() => {
+            const now = Date.now();
+            const noPong = !lastPong || (now - lastPong) > KEEPALIVE_TIMEOUT_MS;
             _disconnectTimer = null;
-            clearSessionIndicator();
+            if (noPong) clearSessionIndicator();
+            else {
+              // keepalive indicated peer still responding; keep session
+              status.textContent = 'Transient network issue recovered — keeping session';
+            }
           }, DISCONNECT_DEBOUNCE_MS);
         }
 

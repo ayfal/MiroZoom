@@ -75,6 +75,24 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
   <script>
+    // keepalive vars for viewer side
+    let dc = null;
+    let lastPong = 0;
+    const KEEPALIVE_TIMEOUT_MS = 25000;
+    const DISCONNECT_DEBOUNCE_MS = 8000;
+    let _disconnectTimer = null;
+
+    function scheduleViewerClearOnTransient(clearFn) {
+      if (_disconnectTimer) return;
+      _disconnectTimer = setTimeout(() => {
+        _disconnectTimer = null;
+        const now = Date.now();
+        const noPong = !lastPong || (now - lastPong) > KEEPALIVE_TIMEOUT_MS;
+        if (noPong) clearFn();
+      }, DISCONNECT_DEBOUNCE_MS);
+    }
+    function onViewerConnected() { if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; } }
+
     // ICE / STUN config helper — add TURN servers if you have them
     function getIceConfig() {
       return {
@@ -147,40 +165,29 @@
         if (!json) throw new Error('Failed to decompress offer.');
         const offer = JSON.parse(json);
 
-        pc = new RTCPeerConnection(getIceConfig());
-
-        pc.ontrack = (evt) => {
-          const stream = evt.streams[0];
-          // attach stream to video element
-          remote.srcObject = stream;
-          // listen for remote track end to clear the view (when host stops sharing)
-          stream.getTracks().forEach(track => {
-            track.addEventListener('ended', () => {
-              // small delay to allow other tracks to end if multiple
-              setTimeout(() => {
-                const anyLive = stream.getTracks().some(t => t.readyState === 'live' || t.enabled);
-                if (!anyLive) clearRemoteView();
-              }, 50);
-            });
-          });
+        pc = new RTCPeerConnection(getIceConfig ? getIceConfig() : undefined);
+        // accept datachannel from host and respond to pings
+        pc.ondatachannel = (evt) => {
+          try {
+            dc = evt.channel;
+            dc.onmessage = (ev) => {
+              try {
+                const msg = JSON.parse(ev.data || '{}');
+                if (msg.t === 'ping') {
+                  lastPong = Date.now();
+                  if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ t: 'pong', ts: Date.now() }));
+                }
+              } catch(e){}
+            };
+            dc.onopen = () => { lastPong = Date.now(); };
+            dc.onclose = () => {};
+          } catch(e) { console.warn('ondatachannel handler error', e); }
         };
-
-        // clear view if connection closes or fails
-        pc.addEventListener('connectionstatechange', () => {
-          if (!pc) return;
-          const s = pc.connectionState;
-          if (s === 'disconnected' || s === 'failed' || s === 'closed') {
-            clearRemoteView();
-          }
-        });
-        pc.addEventListener('iceconnectionstatechange', () => {
-          if (!pc) return;
-          const s = pc.iceConnectionState;
-          if (s === 'disconnected' || s === 'failed' || s === 'closed') {
-            clearRemoteView();
-          }
-        });
-
+ 
+        pc.ontrack = (evt) => {
+          remote.srcObject = evt.streams[0];
+        };
+ 
         await pc.setRemoteDescription(offer);
         setStatus('Ready. Click the button to share microphone and copy answer.');
         btnCopy.disabled = false;

@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
   <style>
-    :root{--bg:#000;--fg:#fff;--accent:#00ff66}
+    :root{--bg:#000;--fg:#fff;--accent:#00ff66;--zoom:1;--pan-x:0px;--pan-y:0px;}
     html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial;}
     .center{display:flex;align-items:center;justify-content:center;}
     #bigBtn{
@@ -20,7 +20,21 @@
     #progressBar { height:14px; background:rgba(255,255,255,0.06); border-radius:8px; overflow:hidden; border:2px solid rgba(255,255,255,0.04); }
     #progressFill { width:0%; height:100%; background:var(--accent); transition: width 220ms linear; }
     #progressText { margin-top:6px; text-align:center; font-size:16px; color:#ffd; min-height:20px; }
-    video#remote{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#000;touch-action:none;}
+    /* transform-based zoom & pan for the remote video */
+    video#remote{
+      position:fixed;
+      inset:0;
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      background:#000;
+      touch-action:none;
+      transform-origin:center center;
+      transform: translate(var(--pan-x, 0px), var(--pan-y, 0px)) scale(var(--zoom, 1));
+      transition: transform 0.02s linear;
+      will-change: transform;
+      cursor: grab;
+    }
   </style>
 </head>
 <body>
@@ -270,104 +284,92 @@
       updateStatus('Ready. Press the big CONNECT button (center) to begin.');
       setProgress('Ready. Press the big CONNECT button', 0);
 
-      // Re-initialize zoom/pan (idempotent)
-      (function initZoomOnce(){
-  // idempotent initializer for zoom/pan UI
-  if (window.__ps_zoom_initialized) return;
-  window.__ps_zoom_initialized = true;
+      // Single idempotent zoom/pan initializer. Keeps a recorded listener list and reattaches
+      // only once. This replaces any fragmented handlers left by prior edits.
+      if (!window.__ps_zoom_initialized) {
+        window.__ps_zoom_initialized = true;
+        (function initZoom(){
+          const remoteEl = document.getElementById('remote');
+          if (!remoteEl) {
+            // If element not present yet, wait for DOM ready then retry
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', initZoom);
+            } else setTimeout(initZoom, 50);
+            return;
+          }
+          // remove previously attached listeners from earlier runs (defensive)
+          if (remoteEl.__ps_listeners) {
+            remoteEl.__ps_listeners.forEach(({el, ev, fn, opts})=> el.removeEventListener(ev, fn, opts));
+          }
+          remoteEl.__ps_listeners = [];
 
-  function safe(selector){ return document.getElementById(selector); }
+          let zoom = 1, panX = 0, panY = 0;
+          const ZOOM_MIN = 1, ZOOM_MAX = 4, ZOOM_STEP = 0.12;
+          const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+          const applyTransform = () => {
+            document.documentElement.style.setProperty('--zoom', String(zoom));
+            document.documentElement.style.setProperty('--pan-x', panX + 'px');
+            document.documentElement.style.setProperty('--pan-y', panY + 'px');
+          };
+          const zoomTo = (newZoom, focalX = window.innerWidth/2, focalY = window.innerHeight/2) => {
+            newZoom = clamp(newZoom, ZOOM_MIN, ZOOM_MAX);
+            const prevZoom = zoom || 1;
+            const rect = remoteEl.getBoundingClientRect();
+            const cx = rect.left + rect.width/2;
+            const cy = rect.top + rect.height/2;
+            const fx = focalX - cx;
+            const fy = focalY - cy;
+            panX = panX - fx * (newZoom/prevZoom - 1);
+            panY = panY - fy * (newZoom/prevZoom - 1);
+            zoom = newZoom;
+            applyTransform();
+          };
 
-  function setup() {
-    const remoteEl = safe('remote');
-    if (!remoteEl) return false;
+          function add(el, ev, fn, opts){ el.addEventListener(ev, fn, opts); remoteEl.__ps_listeners.push({el,ev,fn,opts}); }
 
-    // remove any previously attached listeners we installed earlier (defensive)
-    if (remoteEl.__ps_listeners) {
-      const L = remoteEl.__ps_listeners;
-      L.forEach(({el, ev, fn, opts}) => (el.removeEventListener(ev, fn, opts)));
-    }
-    remoteEl.__ps_listeners = [];
+          // wheel zoom (Ctrl/Cmd + wheel)
+          add(window, 'wheel', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+            zoomTo(clamp(zoom + delta, ZOOM_MIN, ZOOM_MAX), e.clientX, e.clientY);
+          }, { passive: false });
 
-    let zoom = 1, panX = 0, panY = 0;
-    const ZOOM_MIN = 1, ZOOM_MAX = 4, ZOOM_STEP = 0.12;
-    const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
-    const applyTransform = () => {
-      document.documentElement.style.setProperty('--zoom', String(zoom));
-      document.documentElement.style.setProperty('--pan-x', panX + 'px');
-      document.documentElement.style.setProperty('--pan-y', panY + 'px');
-    };
-    const zoomTo = (newZoom, focalX = window.innerWidth/2, focalY = window.innerHeight/2) => {
-      newZoom = clamp(newZoom, ZOOM_MIN, ZOOM_MAX);
-      const prevZoom = zoom || 1;
-      const rect = remoteEl.getBoundingClientRect();
-      const cx = rect.left + rect.width/2;
-      const cy = rect.top + rect.height/2;
-      const fx = focalX - cx;
-      const fy = focalY - cy;
-      panX = panX - fx * (newZoom/prevZoom - 1);
-      panY = panY - fy * (newZoom/prevZoom - 1);
-      zoom = newZoom;
-      applyTransform();
-    };
+          // keyboard shortcuts
+          add(window, 'keydown', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomTo(clamp(zoom + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)); }
+            else if (e.key === '-') { e.preventDefault(); zoomTo(clamp(zoom - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)); }
+            else if (e.key === '0') { e.preventDefault(); zoom = 1; panX = 0; panY = 0; applyTransform(); }
+          });
 
-    // helper to add & record listeners so we can remove them later if needed
-    function add(el, ev, fn, opts){ el.addEventListener(ev, fn, opts); remoteEl.__ps_listeners.push({el,ev,fn,opts}); }
+          // pointer drag pan
+          let dragging = false, last = {x:0,y:0};
+          add(remoteEl, 'pointerdown', (e) => {
+            if (e.button !== 0) return;
+            dragging = true;
+            last.x = e.clientX; last.y = e.clientY;
+            try { remoteEl.setPointerCapture && remoteEl.setPointerCapture(e.pointerId); } catch(e){}
+            remoteEl.style.cursor = 'grabbing';
+          });
+          add(window, 'pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - last.x, dy = e.clientY - last.y;
+            last.x = e.clientX; last.y = e.clientY;
+            panX += dx; panY += dy;
+            applyTransform();
+          });
+          add(window, 'pointerup', (e) => {
+            if (!dragging) return;
+            dragging = false;
+            try { remoteEl.releasePointerCapture && remoteEl.releasePointerCapture(e.pointerId); } catch(e){}
+            remoteEl.style.cursor = 'grab';
+          });
 
-    // wheel zoom (Ctrl/Cmd + wheel)
-    add(window, 'wheel', (e) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
-      zoomTo(clamp(zoom + delta, ZOOM_MIN, ZOOM_MAX), e.clientX, e.clientY);
-    }, { passive: false });
-
-    // keyboard shortcuts
-    add(window, 'keydown', (e) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomTo(clamp(zoom + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)); }
-      else if (e.key === '-') { e.preventDefault(); zoomTo(clamp(zoom - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)); }
-      else if (e.key === '0') { e.preventDefault(); zoom = 1; panX = 0; panY = 0; applyTransform(); }
-    });
-
-    // pointer drag pan
-    let dragging = false, last = {x:0,y:0};
-    add(remoteEl, 'pointerdown', (e) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      last.x = e.clientX; last.y = e.clientY;
-      try { remoteEl.setPointerCapture && remoteEl.setPointerCapture(e.pointerId); } catch(e){}
-      remoteEl.style.cursor = 'grabbing';
-    });
-    add(window, 'pointermove', (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - last.x, dy = e.clientY - last.y;
-      last.x = e.clientX; last.y = e.clientY;
-      panX += dx; panY += dy;
-      applyTransform();
-    });
-    add(window, 'pointerup', (e) => {
-      if (!dragging) return;
-      dragging = false;
-      try { remoteEl.releasePointerCapture && remoteEl.releasePointerCapture(e.pointerId); } catch(e){}
-      remoteEl.style.cursor = 'grab';
-    });
-
-    // initial apply
-    applyTransform();
-    return true;
-  }
-
-  // try immediate; otherwise wait for DOM ready
-  if (!setup()) {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => { setup(); });
-    } else {
-      // try again shortly (in case element injected dynamically)
-      setTimeout(() => { setup(); }, 50);
-    }
-  }
-})();
+          // initial apply
+          applyTransform();
+        })();
+      }
     })();
   </script>
  </body>

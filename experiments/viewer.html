@@ -38,6 +38,10 @@
     const overlay = document.getElementById('overlay');
     const waiting = document.getElementById('waiting');
 
+    // ensure autoplay isn't blocked: start muted so video.play() is allowed
+    video.muted = true;
+    vdbg('video element muted to allow autoplay');
+
     vdbg('Initializing viewer script', { HOST_ID });
 
     const peer = new Peer({

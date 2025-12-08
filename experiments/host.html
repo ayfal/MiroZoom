@@ -29,6 +29,7 @@
   <script>
     const HOST_ID = 'unique-studyroom-for-host-and-visually-impaired';
 
+    // replace dbg implementation with working logger
     window.debugLogs = window.debugLogs || [];
     function dbg(...args) {
       try {
@@ -213,6 +214,7 @@
       dbg('Peer error', err && err.message ? err.message : err);
     });
 
+    // expose a quick getter for logs so you can copy them from DevTools
     window.getHostDebugLogs = () => (window.debugLogs || []).slice();
     dbg('host script loaded and ready');
   </script>

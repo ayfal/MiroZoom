@@ -124,14 +124,17 @@
         dbg('creating RTCPeerConnection and adding local tracks');
         pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-        // add mic track(s)
+        // Ensure we signal that we want to receive video from host
+        dbg('adding recvonly video transceiver to request remote screen');
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
+        // add mic track(s) for sending back to host
         localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
         dbg('local tracks added', {audio: localStream.getAudioTracks().length});
 
         pc.onicecandidate = (ev) => {
           if (ev.candidate && dc && dc.open) {
             dbg('sending ICE candidate to host');
-            // send a plain-serializable candidate object
             dc.send({ type:'candidate', candidate: ev.candidate.toJSON() });
           }
         };
@@ -162,7 +165,6 @@
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         dbg('sending SDP offer to host');
-        // send serializable SDP (plain object)
         dc.send({ type:'offer', sdp: pc.localDescription.toJSON() });
       }
 

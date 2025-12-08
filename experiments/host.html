@@ -11,7 +11,11 @@
     #container{display:flex;flex-direction:column;height:100%;gap:10px;padding:12px;}
     .center{display:flex;align-items:center;justify-content:center;}
     #startBtn{font-size:20px;padding:14px 24px;border-radius:12px;border:4px solid var(--accent);background:var(--fg);color:var(--bg);cursor:pointer}
-    #status{font-size:16px;padding:12px;border-radius:8px;background:#111;min-height:56px;white-space:pre-wrap;overflow:auto;}
+    /* simple progress UI (replaces verbose status text) */
+    #progressContainer { width:100%; padding:10px 0; }
+    #progressBar { height:18px; background:#111; border-radius:10px; overflow:hidden; border:2px solid #222; }
+    #progressFill { width:0%; height:100%; background:var(--accent); transition: width 220ms linear; }
+    #progressText { margin-top:8px; font-size:15px; color:#ddd; min-height:20px; }
     #previewFrame{flex:1;background:#000;border:4px solid #222;display:flex;align-items:center;justify-content:center;position:relative;}
     video#preview{max-width:100%;max-height:100%;border:2px solid #333;box-shadow:0 0 12px rgba(0,0,0,0.5);}
     #controls{display:flex;gap:8px;justify-content:center;padding:8px;}
@@ -27,7 +31,10 @@
       <button id="startBtn" aria-label="Start session as host">Start Session (Host)</button>
     </div>
 
-    <div id="status" aria-live="polite">Ready.</div>
+    <div id="progressContainer" aria-live="polite" role="status" aria-atomic="true">
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <div id="progressText">Ready.</div>
+    </div>
 
     <div id="previewFrame" aria-hidden="false">
       <div id="previewWrapper" class="center">
@@ -62,23 +69,29 @@
         const msg = `[${t}] ${args.map(a=> (typeof a==='object'?JSON.stringify(a):a)).join(' ')}`;
         debugLogs.push(msg);
         console.log(msg);
-        updateStatus(msg);
+        // don't push verbose messages to the UI; UI shows only concise progress
       }
       window.getDebugLogs = () => debugLogs.join('\n');
 
       const startBtn = document.getElementById('startBtn');
-      const statusEl = document.getElementById('status');
-      const preview = document.getElementById('preview');
-      const controls = document.getElementById('controls');
-      const muteBtn = document.getElementById('muteBtn');
-      const endBtn = document.getElementById('endBtn');
+      const progressFill = document.getElementById('progressFill');
+      const progressText = document.getElementById('progressText');
+       const preview = document.getElementById('preview');
+       const controls = document.getElementById('controls');
+       const muteBtn = document.getElementById('muteBtn');
+       const endBtn = document.getElementById('endBtn');
 
-      function updateStatus(txt){
-        statusEl.textContent = txt;
+      function setProgress(text, pct){
+        progressText.textContent = text || '';
+        progressFill.style.width = (typeof pct === 'number' ? pct : 0) + '%';
+      }
+      function hideProgress(){
+        // remove progress UI once session begun
+        try { document.getElementById('progressContainer').style.display = 'none'; } catch(e){}
       }
 
       async function getHostMedia(){
-        updateStatus('Requesting screen capture & microphone permission...');
+        setProgress('Requesting screen & microphone…', 5);
         dbg('requesting media: getDisplayMedia & getUserMedia (mic)');
         try {
           const screen = await navigator.mediaDevices.getDisplayMedia({video:true, audio:false});
@@ -88,23 +101,26 @@
             ...mic.getAudioTracks()
           ]);
           dbg('media acquired', {videoTracks: screen.getVideoTracks().length, audioTracks: mic.getAudioTracks().length});
+          setProgress('Media ready', 20);
           return out;
         } catch (err){
           dbg('media permission denied or error', err && err.message);
+          setProgress('Media permission error', 0);
           throw err;
         }
       }
 
       function attachPreview(stream){
         preview.srcObject = stream;
+        setProgress('Preview active', 30);
       }
 
       function initPeerWithRetry(){
         dbg('attempting to create Peer with fixed id', HOST_ID);
-        updateStatus('Creating Peer with id "'+HOST_ID+'" ... (retrying if taken)');
+        setProgress('Creating signaling (PeerJS)…', 35);
         tryCreatePeer().catch(e=> {
           dbg('fatal peer creation error', e && e.message);
-          updateStatus('Error creating peer: '+(e && e.message));
+          setProgress('Error creating signaling', 0);
         });
       }
 
@@ -121,7 +137,7 @@
         while (true){
           attempt++;
           dbg('peer create attempt #' + attempt);
-          updateStatus('Peer creation attempt #' + attempt + ' ...');
+          setProgress('Creating signaling (attempt #' + attempt + ')', 40);
           try {
             peer = makePeer();
             await new Promise((resolve, reject) => {
@@ -151,7 +167,7 @@
             try { peer && peer.destroy(); } catch(e){}
             const isTaken = (err && (err.type === 'unavailable-id' || /taken/i.test(err.message || '')));
             if (isTaken){
-              updateStatus('ID taken. Retrying in ' + (RETRY_DELAY_MS/1000) + 's ... (ID "'+HOST_ID+'")');
+              setProgress('ID taken, retrying…', 10);
               dbg('id taken, will retry after delay');
               await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
               continue;
@@ -161,7 +177,7 @@
           }
         }
         dbg('peer creation succeeded, now waiting for incoming viewer DataConnections');
-        updateStatus('Peer ready. Waiting for viewer to connect to id "'+HOST_ID+'"...');
+        setProgress('Signaling ready — waiting for viewer', 50);
       }
 
       function playRemoteAudio(stream){
@@ -184,7 +200,7 @@
 
         dc.on('open', () => {
           dbg('data connection open with viewer', dc.peer);
-          updateStatus('Viewer connected (signaling). Waiting for offer...');
+          setProgress('Viewer connected (signaling)', 60);
         });
 
         dc.on('data', async (msg) => {
@@ -194,6 +210,7 @@
             if (msg.type === 'offer') {
               // Create RTCPeerConnection and answer
               dbg('received SDP offer, creating RTCPeerConnection to answer');
+              setProgress('Received offer — preparing answer', 65);
               if (currentPC) {
                 dbg('closing existing PC before creating new one');
                 try { currentPC.close(); } catch(e){}
@@ -219,7 +236,6 @@
               pc.onicecandidate = (ev) => {
                 if (ev.candidate) {
                   dbg('sending ICE candidate to viewer');
-                  // send serializable candidate object
                   dc.send({type:'candidate', candidate: ev.candidate.toJSON()});
                 }
               };
@@ -228,24 +244,22 @@
                 dbg('host pc ontrack (viewer audio?)', {tracks: ev.streams[0] && ev.streams[0].getAudioTracks().length});
                 // play remote audio (viewer mic)
                 playRemoteAudio(ev.streams[0]);
-                updateStatus('Viewer audio receiving. Session established.');
-                setTimeout(()=> updateStatus(''), 800);
+                // hide the progress UI now that session established
+                hideProgress();
                 controls.setAttribute('aria-hidden','false');
               };
 
-              // set remote description from the plain object received (msg.sdp)
               await pc.setRemoteDescription(msg.sdp);
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
               dbg('sending SDP answer to viewer');
-              // send serializable SDP (plain object)
               dc.send({ type:'answer', sdp: pc.localDescription.toJSON() });
+              setProgress('Answer sent — establishing media', 80);
             } else if (msg.type === 'candidate') {
               if (currentPC && msg.candidate) {
                 dbg('adding received candidate to pc');
                 try {
-                  // msg.candidate is plain object -> add directly
-                  await currentPC.addIceCandidate(msg.candidate);
+                  await currentPC.addIceCandidate(new RTCIceCandidate(msg.candidate));
                 } catch (e){
                   dbg('addIceCandidate error', e && e.message);
                 }
@@ -256,7 +270,7 @@
               try { currentDC && currentDC.close(); } catch(e){}
               currentPC = null;
               currentDC = null;
-              updateStatus('Viewer disconnected.');
+              setProgress('Viewer disconnected', 0);
               controls.setAttribute('aria-hidden','true');
             }
           } catch (err){
@@ -269,7 +283,7 @@
           try { currentPC && currentPC.close(); } catch(e){}
           currentPC = null;
           currentDC = null;
-          updateStatus('Viewer disconnected.');
+          setProgress('Viewer disconnected', 0);
           controls.setAttribute('aria-hidden','true');
         });
 
@@ -284,14 +298,14 @@
           hostStream = await getHostMedia();
           attachPreview(hostStream);
           dbg('preview attached');
-          updateStatus('Media ready. Creating Peer and listening for viewer...');
+          setProgress('Media ready — starting signaling', 25);
           initPeerWithRetry();
         } catch (err){
           dbg('could not get media', err && err.message);
-          updateStatus('Could not get required media: ' + (err && err.message));
-          startBtn.disabled = false;
-        }
-      });
+          setProgress('Media error', 0);
+           startBtn.disabled = false;
+         }
+       });
 
       muteBtn.addEventListener('click', ()=>{
         if (!hostStream) return;
@@ -305,17 +319,17 @@
 
       endBtn.addEventListener('click', ()=>{
         dbg('end session requested by host');
-        updateStatus('Ending session...');
-        try { currentDC && currentDC.send({type:'hangup'}); } catch(e){}
-        try { currentPC && currentPC.close(); } catch(e){}
-        try { currentDC && currentDC.close(); } catch(e){}
-        try { peer && peer.destroy(); dbg('peer destroyed'); } catch(e){}
-        try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); dbg('host tracks stopped'); } catch(e){}
-        controls.setAttribute('aria-hidden','true');
-        preview.srcObject = null;
-        startBtn.disabled = false;
-        updateStatus('Session ended. Ready.');
-      });
+        setProgress('Ending session', 0);
+         try { currentDC && currentDC.send({type:'hangup'}); } catch(e){}
+         try { currentPC && currentPC.close(); } catch(e){}
+         try { currentDC && currentDC.close(); } catch(e){}
+         try { peer && peer.destroy(); dbg('peer destroyed'); } catch(e){}
+         try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); dbg('host tracks stopped'); } catch(e){}
+         controls.setAttribute('aria-hidden','true');
+         preview.srcObject = null;
+         startBtn.disabled = false;
+         setProgress('Session ended. Ready.', 0);
+       });
 
       window.addEventListener('beforeunload', ()=>{
         try { currentPC && currentPC.close(); } catch(e){}
@@ -324,7 +338,7 @@
         try { hostStream && hostStream.getTracks().forEach(t=>t.stop()); } catch(e){}
       });
 
-      updateStatus('Ready. Press Start Session to begin.\nHost will share screen and mic. Viewer will connect using fixed id.');
+      setProgress('Ready. Press Start Session', 0);
       dbg('host page loaded');
     })();
   </script>

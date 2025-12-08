@@ -57,6 +57,8 @@
        let localMic = null;
        let dc = null;
        let pc = null;
+       let offerSent = false;
+       let pendingRemoteCandidates = [];
 
       function setProgress(text, pct){
         progressText.textContent = text || '';
@@ -91,9 +93,14 @@
            dc = peer.connect(HOST_ID, { reliable: true });
            dc.on('open', async () => {
              dbg('data connection open to host');
-            await createAndSendOffer(localStream);
-            setProgress('Signaling connected', 50);
-            await createAndSendOffer(localStream);
+             setProgress('Signaling connected', 50);
+             // ensure we only send one offer per connection
+             if (!offerSent) {
+               offerSent = true;
+               await createAndSendOffer(localStream);
+             } else {
+               dbg('offer already sent, skipping duplicate');
+             }
            });
            dc.on('data', async (msg) => {
              dbg('data from host', msg && msg.type);
@@ -101,27 +108,38 @@
              if (msg.type === 'answer') {
                dbg('received SDP answer');
                try {
-                 // msg.sdp is a plain object (type/sdp) -> setRemoteDescription accepts that
-                 await pc.setRemoteDescription(msg.sdp);
-                dbg('remote description set (answer)');
-                dbg('remote description set (answer)');
-                setProgress('Connected (establishing media)…', 75);
+                 // Only set remote description if PC exists and we are in the right state
+                 if (pc && (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-remote-offer' || pc.signalingState === 'stable')) {
+                   await pc.setRemoteDescription(msg.sdp);
+                   dbg('remote description set (answer)');
+                   // flush any queued remote ICE candidates
+                   while (pendingRemoteCandidates.length) {
+                     const c = pendingRemoteCandidates.shift();
+                     try { await pc.addIceCandidate(c); dbg('flushed queued remote candidate'); } catch(e){ dbg('flush candidate failed', e && e.message); }
+                   }
+                 } else {
+                   dbg('answer received but PC not in have-local-offer state; ignoring or queuing', pc && pc.signalingState);
+                 }
                } catch (e){
                  dbg('setRemoteDescription(answer) failed', e && e.message);
-                updateStatus('Failed to set remote description: ' + (e && e.message));
-                setProgress('Failed to set remote description', 0);
+                 setProgress('Failed to set remote description', 0);
                }
              } else if (msg.type === 'candidate') {
-               try {
-                 await pc.addIceCandidate(msg.candidate);
-                 dbg('added remote ICE candidate');
-               } catch (e){
-                 dbg('addIceCandidate error', e && e.message);
+               // If pc not ready with remote description yet, queue candidates
+               if (!pc || !pc.remoteDescription || !pc.remoteDescription.type) {
+                 dbg('queuing remote candidate until remote description set');
+                 pendingRemoteCandidates.push(msg.candidate);
+               } else {
+                 try {
+                   await pc.addIceCandidate(msg.candidate);
+                   dbg('added remote ICE candidate');
+                 } catch (e){
+                   dbg('addIceCandidate error', e && e.message);
+                 }
                }
              } else if (msg.type === 'error') {
                dbg('remote error', msg.message);
-              updateStatus('Remote error: '+ msg.message);
-              setProgress('Remote error', 0);
+               setProgress('Remote error', 0);
              }
            });
            dc.on('close', ()=> {

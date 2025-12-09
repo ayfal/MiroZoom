@@ -1,24 +1,215 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Mirotalk Zoom/Pan Bookmarklet</title>
+  <title>MiroZoom — Accessible</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:20px; background:#f7f7f7; }
-    a.bookmarklet { display:inline-block; padding:12px 18px; background:#0366d6; color:#fff; text-decoration:none; border-radius:6px; }
-    p.small{ color:#444; margin-top:12px; }
+    /* Dark, high-contrast theme with very large text for low-vision users */
+    :root{
+      --bg:#000;
+      --panel:#070707;
+      --text:#ffffff;
+      --muted:#cfcfcf;
+      --accent:#ffd54f; /* bright yellow accent */
+      --accent-text:#000;
+      --focus: 4px solid #00e5ff;
+    }
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      background:linear-gradient(180deg,var(--bg),var(--panel));
+      color:var(--text);
+      padding:36px;
+      font-size:28px; /* base large */
+      line-height:1.4;
+    }
+
+    main{max-width:1100px; margin:0 auto;}
+
+    h1{
+      margin:0 0 18px 0;
+      font-size:56px; /* super large */
+      font-weight:700;
+      letter-spacing:-0.5px;
+    }
+    p.lead{
+      font-size:32px;
+      color:var(--muted);
+      margin:6px 0 24px 0;
+    }
+
+    .panel{
+      background:rgba(255,255,255,0.02);
+      border:1px solid rgba(255,255,255,0.04);
+      padding:28px;
+      border-radius:12px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+    }
+
+    /* Bookmarklet call-to-action: very large, high contrast */
+    .bookmark-wrap{
+      display:flex;
+      gap:18px;
+      align-items:center;
+      flex-wrap:wrap;
+    }
+
+    a.bookmarklet{
+      display:inline-block;
+      background:var(--accent);
+      color:var(--accent-text);
+      text-decoration:none;
+      padding:20px 28px;
+      font-size:36px;
+      font-weight:700;
+      border-radius:12px;
+      border: none;
+      cursor:pointer;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+    }
+    a.bookmarklet:focus,
+    button.copy-btn:focus{
+      outline: none;
+      box-shadow: 0 0 0 6px rgba(0,229,255,0.14), var(--focus);
+    }
+
+    button.copy-btn{
+      background:transparent;
+      color:var(--text);
+      border:2px solid rgba(255,255,255,0.08);
+      padding:16px 22px;
+      font-size:22px;
+      border-radius:10px;
+      cursor:pointer;
+    }
+
+    .instructions{
+      margin-top:20px;
+      font-size:26px;
+      color:var(--muted);
+    }
+
+    .note{
+      margin-top:18px;
+      font-size:20px;
+      color:#ffeaa7;
+      background:rgba(255,213,79,0.06);
+      padding:14px;
+      border-radius:8px;
+    }
+
+    /* Focus-visible for keyboard users */
+    :focus-visible { outline: var(--focus); outline-offset:4px; }
+
+    /* Make link text selectable for screen readers / copy */
+    .bookmark-code{
+      display:block;
+      margin-top:18px;
+      font-size:16px;
+      color:var(--muted);
+      word-break:break-all;
+      background:rgba(255,255,255,0.02);
+      padding:12px;
+      border-radius:8px;
+      border:1px dashed rgba(255,255,255,0.03);
+    }
+
+    /* Responsive: scale down for narrow screens */
+    @media (max-width:720px){
+      h1{font-size:40px}
+      a.bookmarklet{font-size:26px; padding:16px 20px}
+      body{font-size:20px}
+    }
   </style>
 </head>
 <body>
-  <h1>Mirotalk Zoom/Pan Bookmarklet</h1>
-  <p>Drag this link to your bookmarks toolbar. After the screen-share has started in Mirotalk, click the bookmark to isolate the shared video and enable zoom/pan.</p>
+  <main>
+    <h1>MiroZoom</h1>
+    <p class="lead">Isolate a Mirotalk screen-share and zoom & pan it in fullscreen.</p>
 
-  <a class="bookmarklet"
-     href="javascript:(function(){try{const v=document.querySelector('video[id$=&quot;___screen&quot;]');if(!v){alert('Screen video not found (run after screen-share starts).');return;}const container=document.createElement('div');container.style.position='fixed';container.style.inset='0';container.style.background='#000';container.style.zIndex=2147483647;container.style.overflow='hidden';container.style.touchAction='none';const restore={parent:v.parentNode,next:v.nextSibling};container._restore=restore;v.style.position='absolute';v.style.left='50%';v.style.top='50%';v.style.transform='translate(-50%,-50%) scale(1)';v.style.transformOrigin='center center';v.style.maxWidth='none';v.style.maxHeight='none';v.style.width='auto';v.style.height='auto';v.style.objectFit='contain';v.style.cursor='grab';document.body.innerHTML='';document.body.appendChild(container);container.appendChild(v);let scale=1,originX=0,originY=0,lastX=0,lastY=0,dragging=false,startX, startY;function updateTransform(){v.style.transform=`translate(calc(-50% + ${originX}px), calc(-50% + ${originY}px)) scale(${scale})`;}container.addEventListener('wheel',function(e){e.preventDefault();const delta=-e.deltaY;const zoomFactor=Math.exp(delta*0.0015);const rect=v.getBoundingClientRect();const cx=e.clientX-rect.left;const cy=e.clientY-rect.top;const dx=(cx-rect.width/2);const dy=(cy-rect.height/2);originX-=dx*(zoomFactor-1);originY-=dy*(zoomFactor-1);scale=Math.min(Math.max(scale*zoomFactor,0.5),5);updateTransform();},{passive:false});container.addEventListener('pointerdown',function(e){e.preventDefault();dragging=true;startX=e.clientX;startY=e.clientY;lastX=originX;lastY=originY;container.setPointerCapture(e.pointerId);v.style.cursor='grabbing';});container.addEventListener('pointermove',function(e){if(!dragging) return;originX=lastX+(e.clientX-startX);originY=lastY+(e.clientY-startY);updateTransform();});container.addEventListener('pointerup',function(e){dragging=false;v.style.cursor='grab';});container.addEventListener('pointercancel',function(e){dragging=false;v.style.cursor='grab';});let touchState=null;container.addEventListener('touchstart',function(e){if(e.touches.length===2){touchState={a:{x:e.touches[0].clientX,y:e.touches[0].clientY},b:{x:e.touches[1].clientX,y:e.touches[1].clientY},scale}}else if(e.touches.length===1){touchState={panStart:{x:e.touches[0].clientX,y:e.touches[0].clientY},lastX:originX,lastY:originY}}},{passive:false});container.addEventListener('touchmove',function(e){e.preventDefault();if(e.touches.length===2&&touchState&&touchState.a){const a={x:e.touches[0].clientX,y:e.touches[0].clientY};const b={x:e.touches[1].clientX,y:e.touches[1].clientY};const d0=Math.hypot(touchState.a.x-touchState.b.x,touchState.a.y-touchState.b.y);const d1=Math.hypot(a.x-b.x,a.y-b.y);const factor=d1/d0;scale=Math.min(Math.max(touchState.scale*factor,0.5),5);updateTransform();}else if(e.touches.length===1&&touchState&&touchState.panStart){originX=touchState.lastX+(e.touches[0].clientX-touchState.panStart.x);originY=touchState.lastY+(e.touches[0].clientY-touchState.panStart.y);updateTransform();}}, {passive:false});container.addEventListener('touchend',function(e){if(e.touches.length===0) touchState=null;},{passive:false});container.addEventListener('dblclick',function(){scale=1;originX=0;originY=0;updateTransform();});function restorePage(){try{if(container._restore&&container._restore.parent){container._restore.parent.insertBefore(v,container._restore.next);}else document.body.appendChild(v);location.reload();}catch(e){location.reload();}}document.addEventListener('keydown',function(e){if(e.key==='Escape') restorePage();});if(container.requestFullscreen) container.requestFullscreen().catch(()=>{});}catch(err){alert('Bookmarklet error: '+err.message);}})();">
-    MiroZoom
-  </a>
+    <section class="panel" aria-labelledby="cta-heading">
+      <h2 id="cta-heading" style="font-size:30px; margin:0 0 12px 0;">Install</h2>
 
-<p class="small">Usage: join the Mirotalk <a href="https://p2p.mirotalk.com/" target="_blank" rel="noopener noreferrer">p2p.mirotalk.com</a> room, wait for the other user to start sharing, then click the bookmark. Use mouse wheel to zoom, drag to pan, double-click to reset, Esc to restore (or reload).</p>
+      <div class="bookmark-wrap" role="group" aria-label="Bookmarklet actions">
+        <!-- Drag this link to the bookmarks toolbar. It is keyboard focusable. -->
+        <a
+          class="bookmarklet"
+          id="bookmarkletLink"
+          href="javascript:(function(){try{const v=document.querySelector('video[id$=&quot;___screen&quot;]');if(!v){alert('Screen video not found (run after screen-share starts).');return;}const container=document.createElement('div');container.style.position='fixed';container.style.inset='0';container.style.background='#000';container.style.zIndex=2147483647;container.style.overflow='hidden';container.style.touchAction='none';const restore={parent:v.parentNode,next:v.nextSibling};container._restore=restore;v.style.position='absolute';v.style.left='50%';v.style.top='50%';v.style.transform='translate(-50%,-50%) scale(1)';v.style.transformOrigin='center center';v.style.maxWidth='none';v.style.maxHeight='none';v.style.width='auto';v.style.height='auto';v.style.objectFit='contain';v.style.cursor='grab';document.body.innerHTML='';document.body.appendChild(container);container.appendChild(v);let scale=1,originX=0,originY=0,lastX=0,lastY=0,dragging=false,startX, startY;function updateTransform(){v.style.transform=`translate(calc(-50% + ${originX}px), calc(-50% + ${originY}px)) scale(${scale})`;}container.addEventListener('wheel',function(e){e.preventDefault();const delta=-e.deltaY;const zoomFactor=Math.exp(delta*0.0015);const rect=v.getBoundingClientRect();const cx=e.clientX-rect.left;const cy=e.clientY-rect.top;const dx=(cx-rect.width/2);const dy=(cy-rect.height/2);originX-=dx*(zoomFactor-1);originY-=dy*(zoomFactor-1);scale=Math.min(Math.max(scale*zoomFactor,0.5),5);updateTransform();},{passive:false});container.addEventListener('pointerdown',function(e){e.preventDefault();dragging=true;startX=e.clientX;startY=e.clientY;lastX=originX;lastY=originY;container.setPointerCapture(e.pointerId);v.style.cursor='grabbing';});container.addEventListener('pointermove',function(e){if(!dragging) return;originX=lastX+(e.clientX-startX);originY=lastY+(e.clientY-startY);updateTransform();});container.addEventListener('pointerup',function(e){dragging=false;v.style.cursor='grab';});container.addEventListener('pointercancel',function(e){dragging=false;v.style.cursor='grab';});let touchState=null;container.addEventListener('touchstart',function(e){if(e.touches.length===2){touchState={a:{x:e.touches[0].clientX,y:e.touches[0].clientY},b:{x:e.touches[1].clientX,y:e.touches[1].clientY},scale}}else if(e.touches.length===1){touchState={panStart:{x:e.touches[0].clientX,y:e.touches[0].clientY},lastX:originX,lastY:originY}}},{passive:false});container.addEventListener('touchmove',function(e){e.preventDefault();if(e.touches.length===2&&touchState&&touchState.a){const a={x:e.touches[0].clientX,y:e.touches[0].clientY};const b={x:e.touches[1].clientX,y:e.touches[1].clientY};const d0=Math.hypot(touchState.a.x-touchState.b.x,touchState.a.y-touchState.b.y);const d1=Math.hypot(a.x-b.x,a.y-b.y);const factor=d1/d0;scale=Math.min(Math.max(touchState.scale*factor,0.5),5);updateTransform();}else if(e.touches.length===1&&touchState&&touchState.panStart){originX=touchState.lastX+(e.touches[0].clientX-touchState.panStart.x);originY=touchState.lastY+(e.touches[0].clientY-touchState.panStart.y);updateTransform();}}, {passive:false});container.addEventListener('touchend',function(e){if(e.touches.length===0) touchState=null;},{passive:false});container.addEventListener('dblclick',function(){scale=1;originX=0;originY=0;updateTransform();});function restorePage(){try{if(container._restore&&container._restore.parent){container._restore.parent.insertBefore(v,container._restore.next);}else document.body.appendChild(v);location.reload();}catch(e){location.reload();}}document.addEventListener('keydown',function(e){if(e.key==='Escape') restorePage();});if(container.requestFullscreen) container.requestFullscreen().catch(()=>{});}catch(err){alert('Bookmarklet error: '+err.message);}})();"
+          title="Drag this to your bookmarks toolbar to install MiroZoom"
+          aria-label="MiroZoom bookmarklet. Drag to bookmarks toolbar."
+          role="link"
+          tabindex="0"
+        >
+          MiroZoom
+        </a>
+
+        <button class="copy-btn" id="copyBtn" aria-describedby="copyHint">Copy bookmarklet</button>
+      </div>
+
+      <div id="copyHint" class="instructions" aria-live="polite" style="margin-top:14px;color:var(--muted);">
+        Tip: drag the "MiroZoom" link to your browser bookmarks bar. If you cannot drag, press "Copy bookmarklet" and add the code manually in your bookmarks manager.
+      </div>
+
+      <!-- provide the raw bookmarklet code in a selectable area for screen-reader / manual addition -->
+      <pre id="bookmarkCode" class="bookmark-code" aria-label="Bookmarklet code" tabindex="0">
+javascript:(function(){try{const v=document.querySelector('video[id$="___screen"]');if(!v){alert('Screen video not found (run after screen-share starts).');return;}const container=document.createElement('div');container.style.position='fixed';container.style.inset='0';container.style.background='#000';container.style.zIndex=2147483647;container.style.overflow='hidden';container.style.touchAction='none';const restore={parent:v.parentNode,next:v.nextSibling};container._restore=restore;v.style.position='absolute';v.style.left='50%';v.style.top='50%';v.style.transform='translate(-50%,-50%) scale(1)';v.style.transformOrigin='center center';v.style.maxWidth='none';v.style.maxHeight='none';v.style.width='auto';v.style.height='auto';v.style.objectFit='contain';v.style.cursor='grab';document.body.innerHTML='';document.body.appendChild(container);container.appendChild(v);let scale=1,originX=0,originY=0,lastX=0,lastY=0,dragging=false,startX, startY;function updateTransform(){v.style.transform=`translate(calc(-50% + ${originX}px), calc(-50% + ${originY}px)) scale(${scale})`;}container.addEventListener('wheel',function(e){e.preventDefault();const delta=-e.deltaY;const zoomFactor=Math.exp(delta*0.0015);const rect=v.getBoundingClientRect();const cx=e.clientX-rect.left;const cy=e.clientY-rect.top;const dx=(cx-rect.width/2);const dy=(cy-rect.height/2);originX-=dx*(zoomFactor-1);originY-=dy*(zoomFactor-1);scale=Math.min(Math.max(scale*zoomFactor,0.5),5);updateTransform();},{passive:false});container.addEventListener('pointerdown',function(e){e.preventDefault();dragging=true;startX=e.clientX;startY=e.clientY;lastX=originX;lastY=originY;container.setPointerCapture(e.pointerId);v.style.cursor='grabbing';});container.addEventListener('pointermove',function(e){if(!dragging) return;originX=lastX+(e.clientX-startX);originY=lastY+(e.clientY-startY);updateTransform();});container.addEventListener('pointerup',function(e){dragging=false;v.style.cursor='grab';});container.addEventListener('pointercancel',function(e){dragging=false;v.style.cursor='grab';});let touchState=null;container.addEventListener('touchstart',function(e){if(e.touches.length===2){touchState={a:{x:e.touches[0].clientX,y:e.touches[0].clientY},b:{x:e.touches[1].clientX,y=e.touches[1].clientY},scale}}else if(e.touches.length===1){touchState={panStart:{x:e.touches[0].clientX,y:e.touches[0].clientY},lastX:originX,lastY:originY}}},{passive:false});container.addEventListener('touchmove',function(e){e.preventDefault();if(e.touches.length===2&&touchState&&touchState.a){const a={x:e.touches[0].clientX,y:e.touches[0].clientY};const b={x:e.touches[1].clientX,y=e.touches[1].clientY};const d0=Math.hypot(touchState.a.x-touchState.b.x,touchState.a.y-touchState.b.y);const d1=Math.hypot(a.x-b.x,a.y-b.y);const factor=d1/d0;scale=Math.min(Math.max(touchState.scale*factor,0.5),5);updateTransform();}else if(e.touches.length===1&&touchState&&touchState.panStart){originX=touchState.lastX+(e.touches[0].clientX-touchState.panStart.x);originY=touchState.lastY+(e.touches[0].clientY-touchState.panStart.y);updateTransform();}}, {passive:false});container.addEventListener('touchend',function(e){if(e.touches.length===0) touchState=null;},{passive:false});container.addEventListener('dblclick',function(){scale=1;originX=0;originY=0;updateTransform();});function restorePage(){try{if(container._restore&&container._restore.parent){container._restore.parent.insertBefore(v,container._restore.next);}else document.body.appendChild(v);location.reload();}catch(e){location.reload();}}document.addEventListener('keydown',function(e){if(e.key==='Escape') restorePage();});if(container.requestFullscreen) container.requestFullscreen().catch(()=>{});}catch(err){alert('Bookmarklet error: '+err.message);}})();
+      </pre>
+
+      <div class="note" role="status" aria-live="polite">
+        After installing: open a Mirotalk room, wait for screen-sharing to start, then click the MiroZoom bookmark. Wheel to zoom, drag to pan, double-click to reset, Esc to exit.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Copy bookmarklet code to clipboard for users who cannot drag the link
+    (function(){
+      const copyBtn = document.getElementById('copyBtn');
+      const codeEl = document.getElementById('bookmarkCode');
+      const live = document.getElementById('copyHint');
+
+      function fallbackCopy(text){
+        // select and execCopy as fallback
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          ta.setSelectionRange(0, ta.value.length);
+          document.execCommand('copy');
+          ta.remove();
+          return true;
+        } catch (e) { return false; }
+      }
+
+      copyBtn.addEventListener('click', async function(){
+        const text = codeEl.innerText.trim();
+        let ok = false;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          try {
+            await navigator.clipboard.writeText(text);
+            ok = true;
+          } catch(e){ ok = fallbackCopy(text); }
+        } else {
+          ok = fallbackCopy(text);
+        }
+        live.innerText = ok ? 'Bookmarklet code copied to clipboard — open your bookmarks manager and add a new bookmark, pasting this code as the URL.' : 'Copy failed. Select the code below and copy manually.';
+        setTimeout(()=>{ live.innerText = 'Tip: drag the "MiroZoom" link to your browser bookmarks bar. If you cannot drag, press "Copy bookmarklet" and add the code manually in your bookmarks manager.'; }, 6000);
+      });
+
+      // Allow Enter or Space on the big link to act (some browsers won't run bookmarklet from keyboard; this only informs)
+      const link = document.getElementById('bookmarkletLink');
+      link.addEventListener('keydown', function(e){
+        if(e.key === 'Enter' || e.key === ' '){
+          // focusable hint for keyboard users
+          e.preventDefault();
+          alert('To use this bookmarklet: drag it to your bookmarks bar, or copy the code and create a new bookmark in your browser with this code as the URL. Then activate the bookmark after screen-share starts.');
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

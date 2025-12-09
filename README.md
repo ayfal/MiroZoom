@@ -1,57 +1,28 @@
-# PeerSharing
+# MiroZoom — Mirotalk Zoom/Pan Bookmarklet
 
-Minimal, self-hosted one-click screen-share via WebRTC — no server required for signaling (SDP blobs are copied/shared).  
-Designed for study-together sessions, with low-friction, high-visibility UI for visually impaired viewers: large controls, high-contrast styles, keyboard zoom and simple workflows.
+Small utility to isolate a [Mirotalk](https://github.com/miroslavpejic85/mirotalk) screen-share video and enable fullscreen zoom + pan using a bookmarklet.
 
-## Accessibility focus
-- Intended to help visually impaired viewers: large, high-contrast buttons and text; ARIA roles/labels where relevant.
-- Viewer can magnify the incoming video using keyboard (+ / -), wheel, double-click, or pinch, and drag the magnified view for easy inspection.
-- Minimal steps and clear feedback to reduce cognitive load and simplify permission flows.
-
-## Highlights
-- Share your screen + mic to a remote viewer via compressed SDP links.
-- Viewer can share mic back with one click.
-- Session indicator on host shows when the viewer is actually connected; indicator blanks on disconnect.
-- Clean fallbacks for clipboard copy and manual copy modal.
-- Small, single-file frontend: `index.html` (host/sender) and `viewer.html` (receiver).
-
-## Quick start (Windows)
-1. Open a terminal in the project folder:
-   - PowerShell:
-     - If you have Python: `python -m http.server 8000`
-     - Or with Node: `npx http-server -p 8000`
-2. In your browser go to: `http://localhost:8000/index.html` (sharer) and open the shared viewer link in the viewer's browser.
-   - Note: modern browsers require `getDisplayMedia` permissions; using `localhost` avoids HTTPS requirement in most cases.
-
-## How to use
-- Host (Sender)
-  1. Click "Enable screen & microphone" (grant screen + mic permissions).
-  2. Click "Generate Offer & Viewer Link" — link is copied to clipboard (fallback shown if blocked).
-  3. Share the link with your viewer.
-  4. Paste the compressed answer you receive from the viewer into the host's answer box and click "Set Answer & Start".
-  5. Session indicator shows when the viewer is connected and blanks on disconnect.
-
-- Viewer (Receiver)
-  1. Open the URL shared by host (the link contains the compressed offer).
-  2. Click "Share mic & Copy answer" — this requests mic and copies the compressed answer in one flow.
-     - If clipboard copy fails due to browser policy, a manual copy modal appears with the answer string to paste back to the host.
-  3. Send the copied answer back to the host.
-  4. Once the session starts you can zoom/pan the remote video for magnification. If the host ends the session, viewer view blanks.
-
-## Troubleshooting
-- Clipboard copy can be blocked if a permission dialog interrupts the user gesture. If copying fails, use the manual textarea to select/Ctrl+C.
-- If screen capture fails, ensure your browser supports getDisplayMedia and you're using `localhost` or HTTPS.
-- If audio isn't heard, confirm mic permissions and that tracks were included in the answer.
-
-## Tested on
-- Chrome / Edge (desktop) — latest stable versions recommended.
+## What it does
+- Finds the shared screen video element on a Mirotalk page (video elements whose id ends with `___screen`).
+- Removes other UI, places the video in a fullscreen container, and provides:
+  - Mouse wheel zoom (centered at cursor)
+  - Click-and-drag pan
+  - Double‑click to reset
+  - Esc to restore the page (or reload)
+  - Touch pinch/drag support
+- Requests fullscreen when activated (where supported).
 
 ## Files
-- `index.html` — Sender UI / offer generation / session indicator.
-- `viewer.html` — Viewer UI / answer generation / zoom & pan.
-- External libs: lz-string (compression).
+- index.html — page containing the bookmarklet link. Open this file in a browser and drag the link to your bookmarks toolbar.
 
-## License
-Use freely — no warranties. Inspect code before trusting for production.
+## Usage
+1. Join the Mirotalk room in your browser and wait until the other participant starts screen sharing.
+2. Click the bookmark you added from index.html.
+3. Controls:
+   - Mouse wheel: zoom
+   - Click + drag: pan
+   - Double-click: reset zoom/position
+   - Esc: restore original page (or reload)
+   - Touch: pinch to zoom, drag to pan
 
-Enjoy PeerSharing — a tiny, accessible-focused screen-sharing flow designed for low-friction use by visually impaired viewers.
+If the bookmarklet reports "Screen video not found", wait until the screen-share video element appears and try again.

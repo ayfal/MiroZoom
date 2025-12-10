@@ -1,4 +1,4 @@
-#MiroZoom - Add Zoom/Pan Functionality to MiroTalk
+# MiroZoom - Add Zoom/Pan Functionality to MiroTalk
 MiroZoom is a bookmarklet that adds zoom and pan functionality to [MiroTalk](https://p2p.mirotalk.com/) for visually impaired users.
 
 ## Installation and Usage
